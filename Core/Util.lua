@@ -1,4 +1,4 @@
--- Riddled/Core/Util.lua
+-- RoS-Tools/Core/Util.lua
 -- Realm slugging and key normalization.
 --
 -- The exporter keys every character as "Name-realm-slug", matching the

@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Renamed from Riddled to RoS-Tools.** Repository is now
+  `ChrisMartin86/RoS-Tools`; the addon folder and manifest are `RoS-Tools` /
+  `RoS-Tools.toc`.
+- **Slash command is `/ros`.** `/riddle`, `/riddled` and `/rid` are gone.
+- **SavedVariables moved to `RoSToolsDB`.** Clean break — settings saved under
+  the old `RiddledDB` are not migrated and revert to defaults on first login.
+- **Scripts renamed:** `Install-RoSTools.ps1`, `Update-RoSToolsData.ps1`,
+  `Deploy-RoSTools.ps1`, `Tools/Update-RoSTools.ps1`, `Tools/Play-RoSTools.cmd`.
+  The install and data-update one-liners now point at the new repo URL.
+- Global frame names, the tooltip marker and the `ROSTOOLS_*` environment
+  variables were renamed to match. Legacy `RiddledTooltip_DB` /
+  `RiddledTooltip_Meta` import globals keep their old names on purpose, so an
+  old `Riddled_Data.lua` left in the folder still loads.
+
 ## 2.2.0
 
 ### Fixed
@@ -65,7 +83,7 @@
 - **Item level on chat name hover.** A name in guild chat is a
   `|Hplayer:Name-Realm:...|` hyperlink, and Blizzard's
   `HYPERLINKS_WITH_TOOLTIPS` deliberately excludes `player` — so no
-  tooltip exists to append to and Riddled builds the whole thing, header
+  tooltip exists to append to and RoS-Tools builds the whole thing, header
   included. The chat frames' own `OnHyperlinkEnter`/`OnHyperlinkLeave`
   scripts are hooked rather than the global `ChatFrame_OnHyperlinkEnter`,
   since chat replacement addons reuse the frames but not always the
@@ -94,13 +112,13 @@
   an export whose roster shrank by more than a third, which is far more
   likely an API failure than real departures.
 
-- `Tools/Update-Riddled.ps1` — a companion updater that refreshes
+- `Tools/Update-RoSTools.ps1` — a companion updater that refreshes
   `Data/GuildData.lua` outside the game, since WoW's Lua sandbox has no
   network access. Two modes, auto-detected: **export** (Blizzard credentials
   present, shells out to `fetch_guild_info.py`) and **download** (no
   credentials, pulls the published file from GitHub). Guildmates need nothing
   but PowerShell.
-- `Tools/Play-Riddled.cmd` — double-clickable wrapper that updates and then
+- `Tools/Play-RoSTools.cmd` — double-clickable wrapper that updates and then
   launches WoW. A failed update never blocks the game.
 
 Both live under `Tools/`, so neither ships in the packaged addon zip.

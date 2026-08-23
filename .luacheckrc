@@ -18,11 +18,11 @@ ignore = {
 
 globals = {
   -- Our own SavedVariables and legacy data globals
-  "RiddledDB",
+  "RoSToolsDB",
   "RiddledTooltip_DB",
   "RiddledTooltip_Meta",
   -- Slash command globals
-  "SLASH_RIDDLED1", "SLASH_RIDDLED2", "SLASH_RIDDLED3",
+  "SLASH_ROSTOOLS1",
   "SlashCmdList",
   "UISpecialFrames",
 }

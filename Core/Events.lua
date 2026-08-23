@@ -1,11 +1,11 @@
--- Riddled/Core/Events.lua
+-- RoS-Tools/Core/Events.lua
 -- Single event frame. Modules hook in via the registry in Init.lua.
 
 local ADDON_NAME, ns = ...
 
 ns.inCombat = false
 
-local frame = CreateFrame("Frame", "RiddledEventFrame")
+local frame = CreateFrame("Frame", "RoSToolsEventFrame")
 ns.frame = frame
 
 frame:RegisterEvent("ADDON_LOADED")
@@ -36,7 +36,7 @@ frame:SetScript("OnEvent", function(_, event, arg1)
       end
     end
     ns.Print(("loaded -- %s entries%s. %s"):format(
-      ns.Colorize("value", count), suffix, ns.Colorize("dim", "/riddle for help")))
+      ns.Colorize("value", count), suffix, ns.Colorize("dim", "/ros for help")))
 
   elseif event == "PLAYER_REGEN_DISABLED" then
     ns.inCombat = true

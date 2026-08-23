@@ -1,10 +1,10 @@
 <#
-    Riddled data updater -- designed to be run as a one-liner:
+    RoS-Tools data updater -- designed to be run as a one-liner:
 
-        irm https://raw.githubusercontent.com/ChrisMartin86/Riddled2.0/main/scripts/Update-RiddledData.ps1 | iex
+        irm https://raw.githubusercontent.com/ChrisMartin86/RoS-Tools/main/scripts/Update-RoSToolsData.ps1 | iex
 
     Refreshes nothing but Data\GuildData.lua in the installed addon. The
-    addon code itself is left alone; use Install-Riddled.ps1 for that. The
+    addon code itself is left alone; use Install-RoSTools.ps1 for that. The
     new file only replaces the old one if it validates, so a 404 page or a
     dropped connection can never wipe a working roster.
 
@@ -15,7 +15,7 @@
       * There is no param() block and no $PSScriptRoot -- `iex` supplies
         neither. The one knob is an environment variable:
 
-            $env:RIDDLED_ADDON_PATH   full path to the installed Riddled folder
+            $env:ROSTOOLS_ADDON_PATH   full path to the installed RoS-Tools folder
 
       * The whole body runs inside `& { }`. `iex` executes in the caller's
         scope, so without that child scope Set-StrictMode, $ErrorActionPreference
@@ -29,7 +29,7 @@
     $ProgressPreference    = 'SilentlyContinue'
 
     if ($PSVersionTable.PSVersion.Major -lt 5) {
-        Write-Host "Riddled needs Windows PowerShell 5.1 or newer." -ForegroundColor Yellow
+        Write-Host "RoS-Tools needs Windows PowerShell 5.1 or newer." -ForegroundColor Yellow
         return
     }
 
@@ -38,7 +38,7 @@
 
     # The guild-data branch is rewritten daily by the Guild data workflow and
     # holds nothing but the payload, so this URL is stable.
-    $dataUrl = 'https://raw.githubusercontent.com/ChrisMartin86/Riddled2.0/guild-data/GuildData.lua'
+    $dataUrl = 'https://raw.githubusercontent.com/ChrisMartin86/RoS-Tools/guild-data/GuildData.lua'
 
     function Write-Step {
         param([string] $Message)
@@ -64,11 +64,11 @@
     # Locating the installed addon
     # ------------------------------------------------------------------
     function Find-AddOn {
-        if ($env:RIDDLED_ADDON_PATH) {
-            if (-not (Test-Path (Join-Path $env:RIDDLED_ADDON_PATH 'Riddled.toc'))) {
-                throw "RIDDLED_ADDON_PATH '$env:RIDDLED_ADDON_PATH' has no Riddled.toc in it."
+        if ($env:ROSTOOLS_ADDON_PATH) {
+            if (-not (Test-Path (Join-Path $env:ROSTOOLS_ADDON_PATH 'RoS-Tools.toc'))) {
+                throw "ROSTOOLS_ADDON_PATH '$env:ROSTOOLS_ADDON_PATH' has no RoS-Tools.toc in it."
             }
-            return (Resolve-Path $env:RIDDLED_ADDON_PATH).Path
+            return (Resolve-Path $env:ROSTOOLS_ADDON_PATH).Path
         }
 
         $roots = @()
@@ -99,11 +99,11 @@
 
         foreach ($root in $roots) {
             if (-not $root) { continue }
-            $candidate = Join-Path $root '_retail_\Interface\AddOns\Riddled'
-            if (Test-Path (Join-Path $candidate 'Riddled.toc')) { return $candidate }
+            $candidate = Join-Path $root '_retail_\Interface\AddOns\RoS-Tools'
+            if (Test-Path (Join-Path $candidate 'RoS-Tools.toc')) { return $candidate }
         }
 
-        throw "Could not find an installed Riddled addon. Install it first, or set `$env:RIDDLED_ADDON_PATH."
+        throw "Could not find an installed RoS-Tools addon. Install it first, or set `$env:ROSTOOLS_ADDON_PATH."
     }
 
     # ------------------------------------------------------------------
@@ -144,7 +144,7 @@
 
     try {
         Write-Host ""
-        Write-Host "Riddled data update" -ForegroundColor White
+        Write-Host "RoS-Tools data update" -ForegroundColor White
 
         $addOn       = Find-AddOn
         $destination = Join-Path $addOn 'Data\GuildData.lua'

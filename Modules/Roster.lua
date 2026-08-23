@@ -1,4 +1,4 @@
--- Riddled/Modules/Roster.lua
+-- RoS-Tools/Modules/Roster.lua
 -- Appends the item level to names in the Guild & Communities roster.
 --
 -- Blizzard rearranges the Communities frame fairly often and the entry

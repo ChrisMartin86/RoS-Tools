@@ -1,5 +1,5 @@
 @echo off
-REM Riddled -- double-click this to refresh guild data, then start WoW.
+REM RoS-Tools -- double-click this to refresh guild data, then start WoW.
 REM
 REM Put a shortcut to this on your desktop or taskbar and use it instead of
 REM the Battle.net launcher. If the refresh fails for any reason the game
@@ -10,11 +10,11 @@ REM any machine setting.
 
 setlocal
 
-set "SCRIPT=%~dp0Update-Riddled.ps1"
+set "SCRIPT=%~dp0Update-RoSTools.ps1"
 
 if not exist "%SCRIPT%" (
-    echo Could not find Update-Riddled.ps1 next to this file.
-    echo Keep Play-Riddled.cmd and Update-Riddled.ps1 in the same folder.
+    echo Could not find Update-RoSTools.ps1 next to this file.
+    echo Keep Play-RoSTools.cmd and Update-RoSTools.ps1 in the same folder.
     pause
     exit /b 1
 )

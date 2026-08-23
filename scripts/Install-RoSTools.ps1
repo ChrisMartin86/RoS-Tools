@@ -1,10 +1,10 @@
 <#
-    Riddled installer -- designed to be run as a one-liner:
+    RoS-Tools installer -- designed to be run as a one-liner:
 
-        irm https://raw.githubusercontent.com/ChrisMartin86/Riddled2.0/main/scripts/Install-Riddled.ps1 | iex
+        irm https://raw.githubusercontent.com/ChrisMartin86/RoS-Tools/main/scripts/Install-RoSTools.ps1 | iex
 
     Downloads the addon source from GitHub, installs Core\, Modules\, Data\
-    and Riddled.toc into AddOns\Riddled, then replaces Data\GuildData.lua
+    and RoS-Tools.toc into AddOns\RoS-Tools, then replaces Data\GuildData.lua
     with the freshest copy from the guild-data branch. Nothing is written
     until the download validates, and settings live in WTF\ so a reinstall
     never touches them.
@@ -16,8 +16,8 @@
       * There is no param() block and no $PSScriptRoot -- `iex` supplies
         neither. The knobs are environment variables instead:
 
-            $env:RIDDLED_ADDONS_PATH  full path to ...\_retail_\Interface\AddOns
-            $env:RIDDLED_BRANCH       source branch (default: main)
+            $env:ROSTOOLS_ADDONS_PATH  full path to ...\_retail_\Interface\AddOns
+            $env:ROSTOOLS_BRANCH       source branch (default: main)
 
       * The whole body runs inside `& { }`. `iex` executes in the caller's
         scope, so without that child scope Set-StrictMode, $ErrorActionPreference
@@ -31,15 +31,15 @@
     $ProgressPreference    = 'SilentlyContinue'
 
     if ($PSVersionTable.PSVersion.Major -lt 5) {
-        Write-Host "Riddled needs Windows PowerShell 5.1 or newer." -ForegroundColor Yellow
+        Write-Host "RoS-Tools needs Windows PowerShell 5.1 or newer." -ForegroundColor Yellow
         return
     }
 
     # Windows PowerShell 5.1 can still default to TLS 1.0, which GitHub rejects.
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-    $repo      = 'ChrisMartin86/Riddled2.0'
-    $branch    = if ($env:RIDDLED_BRANCH) { $env:RIDDLED_BRANCH } else { 'main' }
+    $repo      = 'ChrisMartin86/RoS-Tools'
+    $branch    = if ($env:ROSTOOLS_BRANCH) { $env:ROSTOOLS_BRANCH } else { 'main' }
     $sourceUrl = "https://github.com/$repo/archive/refs/heads/$branch.zip"
     $dataUrl   = "https://raw.githubusercontent.com/$repo/guild-data/GuildData.lua"
     $payload   = @('Core', 'Modules', 'Data')
@@ -72,11 +72,11 @@
             Registry first -- it survives non-default install locations --
             then the usual suspects on every fixed drive.
         #>
-        if ($env:RIDDLED_ADDONS_PATH) {
-            if (-not (Test-Path $env:RIDDLED_ADDONS_PATH)) {
-                throw "RIDDLED_ADDONS_PATH '$env:RIDDLED_ADDONS_PATH' does not exist."
+        if ($env:ROSTOOLS_ADDONS_PATH) {
+            if (-not (Test-Path $env:ROSTOOLS_ADDONS_PATH)) {
+                throw "ROSTOOLS_ADDONS_PATH '$env:ROSTOOLS_ADDONS_PATH' does not exist."
             }
-            return (Resolve-Path $env:RIDDLED_ADDONS_PATH).Path
+            return (Resolve-Path $env:ROSTOOLS_ADDONS_PATH).Path
         }
 
         $roots = @()
@@ -111,7 +111,7 @@
             if (Test-Path $candidate) { return $candidate }
         }
 
-        throw "Could not find World of Warcraft. Set `$env:RIDDLED_ADDONS_PATH to your _retail_\Interface\AddOns folder and run this again."
+        throw "Could not find World of Warcraft. Set `$env:ROSTOOLS_ADDONS_PATH to your _retail_\Interface\AddOns folder and run this again."
     }
 
     function Test-Writable {
@@ -122,7 +122,7 @@
         #>
         param([string] $Path)
 
-        $probe = Join-Path $Path ".riddled-write-test-$([guid]::NewGuid().ToString('N'))"
+        $probe = Join-Path $Path ".ros-tools-write-test-$([guid]::NewGuid().ToString('N'))"
         try {
             New-Item -ItemType File -Path $probe -Force | Out-Null
             Remove-Item -Path $probe -Force
@@ -175,14 +175,14 @@
     # ------------------------------------------------------------------
     # Main
     # ------------------------------------------------------------------
-    $workspace = Join-Path ([System.IO.Path]::GetTempPath()) "riddled-install-$([guid]::NewGuid().ToString('N'))"
+    $workspace = Join-Path ([System.IO.Path]::GetTempPath()) "ros-tools-install-$([guid]::NewGuid().ToString('N'))"
 
     try {
         Write-Host ""
-        Write-Host "Riddled installer" -ForegroundColor White
+        Write-Host "RoS-Tools installer" -ForegroundColor White
 
         $addOnsRoot  = Find-AddOnsRoot
-        $destination = Join-Path $addOnsRoot 'Riddled'
+        $destination = Join-Path $addOnsRoot 'RoS-Tools'
         Write-Note "AddOns: $addOnsRoot"
 
         if (-not (Test-Writable -Path $addOnsRoot)) {
@@ -206,10 +206,10 @@
         Expand-Archive -Path $zip -DestinationPath $extracted -Force
 
         $sourceRoot = Get-ChildItem -Path $extracted -Directory |
-            Where-Object { Test-Path (Join-Path $_.FullName 'Riddled.toc') } |
+            Where-Object { Test-Path (Join-Path $_.FullName 'RoS-Tools.toc') } |
             Select-Object -First 1
 
-        if (-not $sourceRoot) { throw "The downloaded archive does not contain Riddled.toc." }
+        if (-not $sourceRoot) { throw "The downloaded archive does not contain RoS-Tools.toc." }
 
         foreach ($dir in $payload) {
             if (-not (Test-Path (Join-Path $sourceRoot.FullName $dir))) {
@@ -217,7 +217,7 @@
             }
         }
 
-        $version = Get-TocVersion -Path (Join-Path $sourceRoot.FullName 'Riddled.toc')
+        $version = Get-TocVersion -Path (Join-Path $sourceRoot.FullName 'RoS-Tools.toc')
 
         # --- fresh data -----------------------------------------------
         # Best effort: main's committed copy is a valid fallback, just older.
@@ -256,7 +256,7 @@
         }
 
         $tocArgs = @{
-            Path        = Join-Path $sourceRoot.FullName 'Riddled.toc'
+            Path        = Join-Path $sourceRoot.FullName 'RoS-Tools.toc'
             Destination = $destination
             Force       = $true
         }
@@ -276,7 +276,7 @@
             Write-Problem "Could not refresh the roster ($($dataCheck.Reason)); using the copy bundled with the addon."
         }
 
-        Write-Good "Riddled $version installed to $destination"
+        Write-Good "RoS-Tools $version installed to $destination"
         Write-Note "Restart WoW, or /reload if it's already running."
     }
     catch {

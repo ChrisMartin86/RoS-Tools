@@ -1,4 +1,4 @@
--- Riddled/Core/Data.lua
+-- RoS-Tools/Core/Data.lua
 -- Read side of the guild item level table.
 
 local _, ns = ...
@@ -7,7 +7,7 @@ local Data = {}
 ns.Data = Data
 
 local ilvls   = {}   -- ["Name-realm-slug"] = ilvl
-local lowered = {}   -- lowercased key -> canonical key (for /riddle search)
+local lowered = {}   -- lowercased key -> canonical key (for /ros search)
 local meta    = {}
 local count   = 0
 local built   = false

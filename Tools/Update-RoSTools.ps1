@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Refreshes Riddled's guild data file, then optionally launches WoW.
+    Refreshes the RoS-Tools guild data file, then optionally launches WoW.
 
 .DESCRIPTION
     Two modes, picked automatically:
@@ -24,21 +24,21 @@
     Force 'Export' or 'Download' instead of auto-detecting.
 
 .PARAMETER AddOnPath
-    Path to the installed Riddled addon folder. Auto-detected if omitted.
+    Path to the installed RoS-Tools addon folder. Auto-detected if omitted.
 
 .PARAMETER Force
     Re-download even if the remote file has not changed since last run.
 
 .EXAMPLE
-    .\Update-Riddled.ps1
+    .\Update-RoSTools.ps1
     Refresh the data file in place.
 
 .EXAMPLE
-    .\Update-Riddled.ps1 -Launch
+    .\Update-RoSTools.ps1 -Launch
     Refresh, then start the game. This is what the shortcut runs.
 
 .EXAMPLE
-    .\Update-Riddled.ps1 -Mode Export -Launch
+    .\Update-RoSTools.ps1 -Mode Export -Launch
     Maintainer run: hit the Blizzard API, write the file, play.
 #>
 
@@ -53,7 +53,7 @@ param(
 
     # The guild-data branch is written daily by the Guild data workflow. It
     # holds nothing but the payload, so this URL is stable.
-    [string] $RepoUrl = 'https://raw.githubusercontent.com/ChrisMartin86/Riddled2.0/guild-data/GuildData.lua',
+    [string] $RepoUrl = 'https://raw.githubusercontent.com/ChrisMartin86/RoS-Tools/guild-data/GuildData.lua',
 
     [string] $Realm = 'khadgar',
 
@@ -68,7 +68,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # State lives beside the user's other app data, not in the repo.
-$script:StateDir  = Join-Path $env:LOCALAPPDATA 'Riddled'
+$script:StateDir  = Join-Path $env:LOCALAPPDATA 'RoS-Tools'
 $script:StateFile = Join-Path $script:StateDir 'updater-state.json'
 
 # ----------------------------------------------------------------------
@@ -155,18 +155,18 @@ function Resolve-AddOnPath {
 
     # Running from inside a checkout of the repo? Update the checkout.
     $repoRoot = Split-Path -Parent $PSScriptRoot
-    if ($repoRoot -and (Test-Path (Join-Path $repoRoot 'Riddled.toc'))) {
+    if ($repoRoot -and (Test-Path (Join-Path $repoRoot 'RoS-Tools.toc'))) {
         return $repoRoot
     }
 
     $wowRoot = Find-WowRoot
     if (-not $wowRoot) {
-        throw "Could not find World of Warcraft. Pass -AddOnPath pointing at your Riddled folder."
+        throw "Could not find World of Warcraft. Pass -AddOnPath pointing at your RoS-Tools folder."
     }
 
-    $addOn = Join-Path $wowRoot 'Interface\AddOns\Riddled'
+    $addOn = Join-Path $wowRoot 'Interface\AddOns\RoS-Tools'
     if (-not (Test-Path $addOn)) {
-        throw "Found WoW at '$wowRoot' but no Riddled addon inside it. Install the addon first."
+        throw "Found WoW at '$wowRoot' but no RoS-Tools addon inside it. Install the addon first."
     }
 
     return $addOn
@@ -457,7 +457,7 @@ $updateSucceeded = $false
 
 try {
     Write-Host ""
-    Write-Host "Riddled updater" -ForegroundColor White
+    Write-Host "RoS-Tools updater" -ForegroundColor White
 
     $addOnPath   = Resolve-AddOnPath -Explicit $AddOnPath
     $destination = Join-Path $addOnPath 'Data\GuildData.lua'

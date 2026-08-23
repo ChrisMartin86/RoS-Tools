@@ -1,12 +1,12 @@
 ## Interface: 120000
-## Title: Riddled
+## Title: RoS-Tools
 ## Notes: Shows guild item levels from an external Blizzard API export.
 ## Author: Icebyte-Moon Guard
 ## Version: 2.2.0
-## SavedVariables: RiddledDB
+## SavedVariables: RoSToolsDB
 ## IconTexture: Interface\Icons\INV_Misc_Book_09
 ## X-Category: Guild
-## X-Website: https://github.com/ChrisMartin86/Riddled2.0
+## X-Website: https://github.com/ChrisMartin86/RoS-Tools
 ## X-License: MIT
 
 # Core -- load order matters

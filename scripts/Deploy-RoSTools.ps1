@@ -3,14 +3,14 @@
     Copies this checkout's addon source into the installed WoW AddOns folder.
 
 .DESCRIPTION
-    Dev-loop deploy, not the end-user updater (that's Tools\Update-Riddled.ps1,
+    Dev-loop deploy, not the end-user updater (that's Tools\Update-RoSTools.ps1,
     which only refreshes Data\GuildData.lua). This script ships Core\, Modules\,
-    Data\, and Riddled.toc -- the same payload CI zips, excluding Tools,
-    .git*, and *.md -- into <WoW>\_retail_\Interface\AddOns\Riddled.
+    Data\, and RoS-Tools.toc -- the same payload CI zips, excluding Tools,
+    .git*, and *.md -- into <WoW>\_retail_\Interface\AddOns\RoS-Tools.
 
     The destination folder is wiped and rewritten each run, so a file you
     deleted or renamed in source does not linger in the installed copy.
-    SavedVariables (RiddledDB) live under WTF\, not AddOns\, so this never
+    SavedVariables (RoSToolsDB) live under WTF\, not AddOns\, so this never
     touches your settings.
 
 .PARAMETER WowPath
@@ -20,10 +20,10 @@
     couple of other common install locations before giving up.
 
 .EXAMPLE
-    .\scripts\Deploy-Riddled.ps1
+    .\scripts\Deploy-RoSTools.ps1
 
 .EXAMPLE
-    .\scripts\Deploy-Riddled.ps1 -WowPath 'D:\Games\World of Warcraft'
+    .\scripts\Deploy-RoSTools.ps1 -WowPath 'D:\Games\World of Warcraft'
 #>
 
 [CmdletBinding()]
@@ -51,20 +51,20 @@ function Write-Problem {
 
 # ----------------------------------------------------------------------
 # Verify source: this script lives in <repo>\scripts, so the repo root
-# is one level up. Confirm it's actually Riddled before touching anyone's
+# is one level up. Confirm it's actually RoS-Tools before touching anyone's
 # AddOns folder.
 # ----------------------------------------------------------------------
 function Resolve-RepoRoot {
     $repoRoot = Split-Path -Parent $PSScriptRoot
-    $tocPath  = Join-Path $repoRoot 'Riddled.toc'
+    $tocPath  = Join-Path $repoRoot 'RoS-Tools.toc'
 
     if (-not (Test-Path $tocPath)) {
-        throw "Riddled.toc not found at '$repoRoot'. Run this script from scripts\ inside the Riddled-2.0 checkout."
+        throw "RoS-Tools.toc not found at '$repoRoot'. Run this script from scripts\ inside the RoS-Tools checkout."
     }
 
     foreach ($dir in @('Core', 'Modules', 'Data')) {
         if (-not (Test-Path (Join-Path $repoRoot $dir))) {
-            throw "Expected folder '$dir' is missing from '$repoRoot' -- this doesn't look like the Riddled-2.0 repo."
+            throw "Expected folder '$dir' is missing from '$repoRoot' -- this doesn't look like the RoS-Tools repo."
         }
     }
 
@@ -109,11 +109,11 @@ function Resolve-AddOnsRoot {
 # Main
 # ----------------------------------------------------------------------
 Write-Host ""
-Write-Host "Riddled deploy" -ForegroundColor White
+Write-Host "RoS-Tools deploy" -ForegroundColor White
 
 $repoRoot    = Resolve-RepoRoot
 $addOnsRoot  = Resolve-AddOnsRoot -PreferredRoot $WowPath
-$destination = Join-Path $addOnsRoot 'Riddled'
+$destination = Join-Path $addOnsRoot 'RoS-Tools'
 
 Write-Step "Source:      $repoRoot"
 Write-Step "Destination: $destination"
@@ -134,7 +134,7 @@ foreach ($dir in @('Core', 'Modules', 'Data')) {
 }
 
 $tocCopyArgs = @{
-    Path        = Join-Path $repoRoot 'Riddled.toc'
+    Path        = Join-Path $repoRoot 'RoS-Tools.toc'
     Destination = $destination
     Force       = $true
 }

@@ -1,4 +1,4 @@
--- Riddled/Core/Init.lua
+-- RoS-Tools/Core/Init.lua
 -- Namespace bootstrap, module registry, logging helpers.
 
 local ADDON_NAME, ns = ...
@@ -29,7 +29,7 @@ end
 -- ------------------------------------------------------------------
 -- Logging
 -- ------------------------------------------------------------------
-local PREFIX = COLOR.brand .. "Riddled" .. COLOR.reset .. ": "
+local PREFIX = COLOR.brand .. "RoS-Tools" .. COLOR.reset .. ": "
 
 function ns.Print(...)
   local parts = {}

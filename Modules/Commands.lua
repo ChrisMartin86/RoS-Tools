@@ -1,5 +1,5 @@
--- Riddled/Modules/Commands.lua
--- /riddle -- lookup, search, stats, options.
+-- RoS-Tools/Modules/Commands.lua
+-- /ros -- lookup, search, stats, options.
 
 local _, ns = ...
 
@@ -26,7 +26,7 @@ register("help", "", "Show this help", function()
   for i = 1, #order do
     local name = order[i]
     local h = handlers[name]
-    local cmd = ("/riddle %s %s"):format(name, h.usage)
+    local cmd = ("/ros %s %s"):format(name, h.usage)
     DEFAULT_CHAT_FRAME:AddMessage(("  %s%-28s%s %s"):format(
       ns.COLOR.brand, cmd:gsub("%s+$", ""), ns.COLOR.reset, h.description))
   end
@@ -38,7 +38,7 @@ end)
 
 register("who", "<name>", "Look up one character", function(args)
   if not args or args == "" then
-    ns.Warn("usage: /riddle who <name>")
+    ns.Warn("usage: /ros who <name>")
     return
   end
 
@@ -64,7 +64,7 @@ end)
 
 register("find", "<text>", "Search names and realms", function(args)
   if not args or args == "" then
-    ns.Warn("usage: /riddle find <text>")
+    ns.Warn("usage: /ros find <text>")
     return
   end
   local matches = ns.Data:Find(args, 20)
@@ -176,13 +176,11 @@ local function dispatch(input)
     return
   end
 
-  -- Bare "/riddle Somename" is treated as a lookup.
+  -- Bare "/ros Somename" is treated as a lookup.
   handlers.who.fn(input)
 end
 
 function Commands:OnEnable()
-  SLASH_RIDDLED1 = "/riddle"
-  SLASH_RIDDLED2 = "/riddled"
-  SLASH_RIDDLED3 = "/rid"
-  SlashCmdList["RIDDLED"] = dispatch
+  SLASH_ROSTOOLS1 = "/ros"
+  SlashCmdList["ROSTOOLS"] = dispatch
 end

@@ -1,6 +1,6 @@
--- Riddled/Modules/Browser.lua
+-- RoS-Tools/Modules/Browser.lua
 -- A self-contained window listing the whole exported roster.
--- Opened with /riddle list. Deliberately does not touch any Blizzard
+-- Opened with /ros list. Deliberately does not touch any Blizzard
 -- frame, so it cannot break when the Communities UI changes.
 
 local _, ns = ...
@@ -70,7 +70,7 @@ local function refresh()
 end
 
 local function build()
-  frame = CreateFrame("Frame", "RiddledBrowserFrame", UIParent, "BasicFrameTemplateWithInset")
+  frame = CreateFrame("Frame", "RoSToolsBrowserFrame", UIParent, "BasicFrameTemplateWithInset")
   frame:SetSize(WIDTH, HEIGHT)
   frame:SetPoint("CENTER")
   frame:SetMovable(true)
@@ -81,9 +81,9 @@ local function build()
   frame:SetClampedToScreen(true)
   frame:Hide()
 
-  frame.TitleText:SetText("Riddled -- Guild Item Levels")
+  frame.TitleText:SetText("RoS-Tools -- Guild Item Levels")
 
-  tinsert(UISpecialFrames, "RiddledBrowserFrame") -- Escape closes it
+  tinsert(UISpecialFrames, "RoSToolsBrowserFrame") -- Escape closes it
 
   -- Search box
   local search = CreateFrame("EditBox", nil, frame, "SearchBoxTemplate")
@@ -113,7 +113,7 @@ local function build()
   end)
 
   -- Scroll frame
-  scrollFrame = CreateFrame("ScrollFrame", "RiddledBrowserScroll", frame, "FauxScrollFrameTemplate")
+  scrollFrame = CreateFrame("ScrollFrame", "RoSToolsBrowserScroll", frame, "FauxScrollFrameTemplate")
   scrollFrame:SetPoint("TOPLEFT", 12, -60)
   scrollFrame:SetSize(WIDTH - 48, VISIBLE_ROWS * ROW_HEIGHT)
   scrollFrame:SetScript("OnVerticalScroll", function(self, offset)

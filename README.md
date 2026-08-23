@@ -1,4 +1,4 @@
-# Riddled
+# RoS-Tools
 
 A World of Warcraft addon that shows guild members' item levels — including
 offline members and alts on other realms — sourced from a periodic Blizzard
@@ -12,8 +12,8 @@ a standalone browser window.
 ## Layout
 
 ```
-Riddled/
-├── Riddled.toc                 Addon manifest and load order
+RoS-Tools/
+├── RoS-Tools.toc                 Addon manifest and load order
 ├── Core/
 │   ├── Init.lua                Namespace, module registry, logging
 │   ├── Util.lua                Realm slugging and key normalization
@@ -26,7 +26,7 @@ Riddled/
 │   ├── Tooltip.lua             Unit tooltip injection
 │   ├── Roster.lua              Guild & Communities roster annotation
 │   ├── Browser.lua             Standalone roster window
-│   └── Commands.lua            /riddle slash commands
+│   └── Commands.lua            /ros slash commands
 └── Tools/
     └── fetch_guild_info.py     Regenerates Data/GuildData.lua
 ```
@@ -40,7 +40,7 @@ Riddled/
 In PowerShell — Windows PowerShell 5.1 or PowerShell 7, either works:
 
 ```powershell
-irm https://raw.githubusercontent.com/ChrisMartin86/Riddled2.0/main/scripts/Install-Riddled.ps1 | iex
+irm https://raw.githubusercontent.com/ChrisMartin86/RoS-Tools/main/scripts/Install-RoSTools.ps1 | iex
 ```
 
 Use `irm`, not `iwr`. On 5.1, `Invoke-WebRequest` hands the response to the
@@ -49,8 +49,8 @@ fails before the script ever runs. `Invoke-RestMethod` returns the text
 directly and has no such dependency.
 
 That finds your WoW install, downloads the current `main`, installs
-`Core\`, `Modules\`, `Data\` and `Riddled.toc` into
-`_retail_\Interface\AddOns\Riddled`, and pulls the freshest roster from the
+`Core\`, `Modules\`, `Data\` and `RoS-Tools.toc` into
+`_retail_\Interface\AddOns\RoS-Tools`, and pulls the freshest roster from the
 `guild-data` branch. Run it again any time to upgrade — settings live under
 `WTF\` and are never touched.
 
@@ -60,11 +60,11 @@ override the defaults, since `iex` leaves no way to pass parameters:
 
 | Variable | Effect |
 | --- | --- |
-| `RIDDLED_ADDONS_PATH` | Full path to `_retail_\Interface\AddOns`, if auto-detection fails |
-| `RIDDLED_BRANCH` | Install from a branch other than `main` |
+| `ROSTOOLS_ADDONS_PATH` | Full path to `_retail_\Interface\AddOns`, if auto-detection fails |
+| `ROSTOOLS_BRANCH` | Install from a branch other than `main` |
 
-Manual install works too: copy the `Riddled` folder into
-`World of Warcraft\_retail_\Interface\AddOns\Riddled`. `Riddled.toc` must sit
+Manual install works too: copy the `RoS-Tools` folder into
+`World of Warcraft\_retail_\Interface\AddOns\RoS-Tools`. `RoS-Tools.toc` must sit
 directly inside that folder — not one level deeper.
 
 ---
@@ -73,17 +73,17 @@ directly inside that folder — not one level deeper.
 
 | Command | Effect |
 | --- | --- |
-| `/riddle` | Command help |
-| `/riddle list` | Open the roster browser window |
-| `/riddle who <name>` | Look up one character, with fuzzy fallback |
-| `/riddle find <text>` | Search names and realms |
-| `/riddle top [n]` | Highest item levels, default 10 |
-| `/riddle stats` | Median, mean, range, export age |
-| `/riddle set` | List all options and current values |
-| `/riddle set <option> [on\|off]` | Toggle or set an option |
-| `/riddle reload` | Rebuild the lookup table in place |
+| `/ros` | Command help |
+| `/ros list` | Open the roster browser window |
+| `/ros who <name>` | Look up one character, with fuzzy fallback |
+| `/ros find <text>` | Search names and realms |
+| `/ros top [n]` | Highest item levels, default 10 |
+| `/ros stats` | Median, mean, range, export age |
+| `/ros set` | List all options and current values |
+| `/ros set <option> [on\|off]` | Toggle or set an option |
+| `/ros reload` | Rebuild the lookup table in place |
 
-`/riddled` and `/rid` are aliases. A bare `/riddle Somename` is treated as a
+`/ros` is the only slash command. A bare `/ros Somename` is treated as a
 lookup.
 
 ### Options
@@ -180,18 +180,18 @@ and realm/guild/region can be overridden per run.
 For guildmates, one line in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/ChrisMartin86/Riddled2.0/main/scripts/Update-RiddledData.ps1 | iex
+irm https://raw.githubusercontent.com/ChrisMartin86/RoS-Tools/main/scripts/Update-RoSToolsData.ps1 | iex
 ```
 
-`scripts/Update-RiddledData.ps1` touches nothing but
+`scripts/Update-RoSToolsData.ps1` touches nothing but
 `Data\GuildData.lua` in the installed addon — no repo checkout, no Python, no
-credentials. Set `RIDDLED_ADDON_PATH` if the addon folder isn't found
+credentials. Set `ROSTOOLS_ADDON_PATH` if the addon folder isn't found
 automatically. Re-run it whenever the numbers look old; `/reload` picks up the
 new file without restarting the game.
 
 ### Companion updater
 
-`Tools/Update-Riddled.ps1` is the fuller local version, and what actually
+`Tools/Update-RoSTools.ps1` is the fuller local version, and what actually
 moves the file onto a maintainer's PC.
 
 It picks one of two modes automatically:
@@ -204,16 +204,16 @@ It picks one of two modes automatically:
 Force one with `-Mode Export` or `-Mode Download`.
 
 ```powershell
-.\Tools\Update-Riddled.ps1              # refresh in place
-.\Tools\Update-Riddled.ps1 -Launch      # refresh, then start the game
-.\Tools\Update-Riddled.ps1 -Force       # ignore the cached ETag
+.\Tools\Update-RoSTools.ps1              # refresh in place
+.\Tools\Update-RoSTools.ps1 -Launch      # refresh, then start the game
+.\Tools\Update-RoSTools.ps1 -Force       # ignore the cached ETag
 ```
 
 The addon folder is found automatically — via the uninstall registry key,
 then the usual install locations. Override with `-AddOnPath`. Point it at a
 different fork or branch with `-RepoUrl`.
 
-`Tools\Play-Riddled.cmd` is a double-clickable wrapper that runs the updater
+`Tools\Play-RoSTools.cmd` is a double-clickable wrapper that runs the updater
 with `-Launch`. Put a shortcut to it on the desktop and use it instead of the
 Battle.net launcher. If the update fails the game still starts — you just get
 slightly older numbers.
@@ -223,7 +223,7 @@ anything is replaced: HTML error pages, truncated files, unbalanced braces,
 and files with no character entries are all rejected, and the existing data is
 left alone. One `.bak` copy is kept beside the installed file.
 
-Guildmates don't need it — the one-liner above covers them. `Play-Riddled.cmd`
+Guildmates don't need it — the one-liner above covers them. `Play-RoSTools.cmd`
 is still worth handing to anyone who'd rather launch the game through a
 desktop shortcut than run the updater by hand.
 
@@ -245,7 +245,7 @@ Two rules cover almost everything:
 Realms with lowercase joining words (`Sisters of Elune`) can't be derived
 mechanically and live in the `SLUG_OVERRIDES` table at the top of `Util.lua`.
 If a guildmate's ilvl never resolves, that table is the first place to look —
-turn on `/riddle set debug` and the failing key gets logged.
+turn on `/ros set debug` and the failing key gets logged.
 
 ---
 

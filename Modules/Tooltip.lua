@@ -1,4 +1,4 @@
--- Riddled/Modules/Tooltip.lua
+-- RoS-Tools/Modules/Tooltip.lua
 -- Injects the guild item level line into unit tooltips, and builds one
 -- from scratch when you hover a player name in chat.
 --
@@ -16,7 +16,7 @@ local _, ns = ...
 
 local Tooltip = ns:RegisterModule("Tooltip")
 
-local MARKER = "Riddled_ilvl_line"
+local MARKER = "RoSTools_ilvl_line"
 
 local function alreadyStamped(tooltip)
   return tooltip[MARKER] == true
@@ -202,8 +202,8 @@ end
 local function hookChatFrames()
   for i = 1, MAX_CHAT_FRAMES do
     local cf = _G["ChatFrame" .. i]
-    if cf and cf.HookScript and not cf.riddledChatHooked then
-      cf.riddledChatHooked = true
+    if cf and cf.HookScript and not cf.rosToolsChatHooked then
+      cf.rosToolsChatHooked = true
       cf:HookScript("OnHyperlinkEnter", onChatLinkEnter)
       cf:HookScript("OnHyperlinkLeave", onChatLinkLeave)
     end
