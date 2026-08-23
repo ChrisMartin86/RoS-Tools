@@ -125,6 +125,44 @@ never commit them, and never add a secret to the addon side. 2.0 deleted an
 embedded cipher plus a plaintext `RIDDLED_SECRET` that protected nothing; don't
 bring that pattern back.
 
+## Distribution scripts
+
+`scripts/Install-Riddled.ps1` and `scripts/Update-RiddledData.ps1` are handed
+out as `irm … | iex` one-liners and must run on **Windows PowerShell 5.1** as
+well as 7. That imposes four rules, all easy to break by accident:
+
+- **No `param()` block and no `$PSScriptRoot`.** Piping into `iex` supplies
+  neither. Every knob is an environment variable (`RIDDLED_ADDONS_PATH`,
+  `RIDDLED_ADDON_PATH`, `RIDDLED_BRANCH`); add new ones the same way.
+- **The whole body lives inside `& { … }`.** `iex` executes in the *caller's*
+  scope, so an unwrapped script would leave `Set-StrictMode`,
+  `$ErrorActionPreference = 'Stop'` and every helper function behind in the
+  guildmate's console. Keep new code inside the block and use plain locals —
+  `$script:` would leak for the same reason.
+- **5.1 compatibility.** `Invoke-WebRequest` always needs `-UseBasicParsing`;
+  TLS 1.2 is set explicitly because 5.1 can still negotiate 1.0. Document the
+  one-liner as `irm`, never `iwr` — on 5.1 `iwr` routes through the IE parsing
+  engine, which Windows 11 does not ship.
+- **Self-contained.** They must not dot-source anything from the repo, so the
+  `Test-GuildData` validator is duplicated from `Tools/Update-Riddled.ps1` on
+  purpose. Fix a validation bug in all three places.
+
+Lint them with PSScriptAnalyzer before pushing; `PSAvoidUsingWriteHost` is
+expected and ignored, since these are console-facing by design.
+
+```powershell
+Invoke-ScriptAnalyzer -Path .\scripts -Settings @{
+    Rules = @{
+        PSUseCompatibleSyntax  = @{ Enable = $true; TargetVersions = @('5.1', '7.0') }
+        PSUseCompatibleCmdlets = @{ Enable = $true; compatibility = @('desktop-5.1.14393.206-windows') }
+    }
+}
+```
+
+They are served raw from `main`, so a bad push to those two files breaks
+installs immediately — there is no release gate in front of them.
+`scripts/Deploy-Riddled.ps1` is unrelated: local dev-loop copy, never handed out.
+
 ## Versioning
 
 `## Version:` in `Riddled.toc` is the source of truth — CI greps it for the zip

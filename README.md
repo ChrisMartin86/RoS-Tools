@@ -37,13 +37,35 @@ Riddled/
 
 ## Installing
 
-Copy the `Riddled` folder into:
+In PowerShell — Windows PowerShell 5.1 or PowerShell 7, either works:
 
-```
-World of Warcraft\_retail_\Interface\AddOns\Riddled
+```powershell
+irm https://raw.githubusercontent.com/ChrisMartin86/Riddled2.0/main/scripts/Install-Riddled.ps1 | iex
 ```
 
-`Riddled.toc` must sit directly inside that folder — not one level deeper.
+Use `irm`, not `iwr`. On 5.1, `Invoke-WebRequest` hands the response to the
+Internet Explorer parsing engine, which Windows 11 no longer ships — the call
+fails before the script ever runs. `Invoke-RestMethod` returns the text
+directly and has no such dependency.
+
+That finds your WoW install, downloads the current `main`, installs
+`Core\`, `Modules\`, `Data\` and `Riddled.toc` into
+`_retail_\Interface\AddOns\Riddled`, and pulls the freshest roster from the
+`guild-data` branch. Run it again any time to upgrade — settings live under
+`WTF\` and are never touched.
+
+If WoW sits under `Program Files`, Windows may refuse the write; the script
+says so and you re-run it in an elevated window. Two environment variables
+override the defaults, since `iex` leaves no way to pass parameters:
+
+| Variable | Effect |
+| --- | --- |
+| `RIDDLED_ADDONS_PATH` | Full path to `_retail_\Interface\AddOns`, if auto-detection fails |
+| `RIDDLED_BRANCH` | Install from a branch other than `main` |
+
+Manual install works too: copy the `Riddled` folder into
+`World of Warcraft\_retail_\Interface\AddOns\Riddled`. `Riddled.toc` must sit
+directly inside that folder — not one level deeper.
 
 ---
 
@@ -124,9 +146,15 @@ companion; it drops the current file in place before the game starts.
 
 ### The daily job
 
-`.github/workflows/guild-data.yml` runs at 09:00 UTC, re-exports the roster,
+`.github/workflows/guild-data.yml` runs at 08:00 UTC, re-exports the roster,
 and pushes to the **`guild-data`** branch. That branch holds only
 `GuildData.lua` — no source, no history of yours to pollute.
+
+08:00 UTC is 4am Eastern in summer and 3am in winter. GitHub's cron is UTC
+only and honours no timezone, so the local hour drifts an hour twice a year;
+both sides land well before raid time. GitHub also **disables scheduled
+workflows in a repo with no pushes for 60 days** and emails you about it — if
+the roster quietly goes stale, check the Actions tab first.
 
 Two repository secrets are required:
 
@@ -147,9 +175,24 @@ would wipe everyone's data.
 Run it by hand from the Actions tab; `force` publishes even with no changes,
 and realm/guild/region can be overridden per run.
 
+### Refreshing on a PC
+
+For guildmates, one line in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ChrisMartin86/Riddled2.0/main/scripts/Update-RiddledData.ps1 | iex
+```
+
+`scripts/Update-RiddledData.ps1` touches nothing but
+`Data\GuildData.lua` in the installed addon — no repo checkout, no Python, no
+credentials. Set `RIDDLED_ADDON_PATH` if the addon folder isn't found
+automatically. Re-run it whenever the numbers look old; `/reload` picks up the
+new file without restarting the game.
+
 ### Companion updater
 
-`Tools/Update-Riddled.ps1` is what actually moves the file onto a PC.
+`Tools/Update-Riddled.ps1` is the fuller local version, and what actually
+moves the file onto a maintainer's PC.
 
 It picks one of two modes automatically:
 
@@ -180,8 +223,9 @@ anything is replaced: HTML error pages, truncated files, unbalanced braces,
 and files with no character entries are all rejected, and the existing data is
 left alone. One `.bak` copy is kept beside the installed file.
 
-Guildmates only need `Update-Riddled.ps1` and `Play-Riddled.cmd`; neither is
-included in the packaged addon zip, so hand them over directly.
+Guildmates don't need it — the one-liner above covers them. `Play-Riddled.cmd`
+is still worth handing to anyone who'd rather launch the game through a
+desktop shortcut than run the updater by hand.
 
 ---
 
