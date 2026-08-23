@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# My secrets
+*.secrets
+
+# Exporter output / local artifacts
+output.txt
+*.log
+
+# WoW SavedVariables (never commit)
+*.lua.bak
+WTF/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

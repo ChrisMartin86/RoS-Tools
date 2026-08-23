@@ -1,0 +1,26 @@
+## Interface: 120000
+## Title: Riddled
+## Notes: Shows guild item levels from an external Blizzard API export.
+## Author: Icebyte-Moon Guard
+## Version: 2.0.0
+## SavedVariables: RiddledDB
+## IconTexture: Interface\Icons\INV_Misc_Book_09
+## X-Category: Guild
+## X-Website: https://github.com/ChrisMartin86/Riddled
+## X-License: MIT
+
+# Core -- load order matters
+Core\Init.lua
+Core\Util.lua
+Core\Config.lua
+Data\GuildData.lua
+Core\Data.lua
+
+# Modules
+Modules\Tooltip.lua
+Modules\Roster.lua
+Modules\Browser.lua
+Modules\Commands.lua
+
+# Event loop last, so every module has registered by the time it fires
+Core\Events.lua

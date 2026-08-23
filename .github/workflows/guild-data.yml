@@ -1,0 +1,180 @@
+name: Guild data
+
+# Re-exports the guild roster from the Blizzard API once a day and publishes
+# it to the `guild-data` branch. The companion updater pulls from there; the
+# addon reads whatever the companion dropped into Data/GuildData.lua.
+#
+# Nothing is committed unless item levels actually changed -- the exporter
+# stamps a fresh generated_at every run, so a plain file diff is always dirty.
+#
+# Requires two repository secrets:
+#   BLIZZARD_CLIENT_ID
+#   BLIZZARD_CLIENT_SECRET
+# Create them at https://develop.battle.net/access/clients
+
+on:
+  schedule:
+    # 09:00 UTC daily -- early morning US, well before raid time.
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+    inputs:
+      realm:
+        description: "Guild's home realm slug"
+        default: khadgar
+      guild:
+        description: 'Guild name'
+        default: 'Riddle of Steel'
+      region:
+        description: 'API region'
+        default: us
+      force:
+        description: 'Publish even if nothing changed'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# A slow export must never race the next day's run.
+concurrency:
+  group: guild-data
+  cancel-in-progress: false
+
+env:
+  DATA_BRANCH: guild-data
+  DATA_FILE: GuildData.lua
+
+jobs:
+  export:
+    name: Export and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out tools
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Fetch currently published data
+        id: published
+        run: |
+          if git ls-remote --exit-code --heads origin "$DATA_BRANCH" >/dev/null 2>&1; then
+            echo "Data branch exists; fetching it."
+            git fetch --depth=1 origin "$DATA_BRANCH"
+            if git show "origin/$DATA_BRANCH:$DATA_FILE" > old.lua 2>/dev/null; then
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Branch exists but has no $DATA_FILE yet."
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+            fi
+            echo "branch=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No data branch yet; this will be the first publish."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "branch=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Export roster
+        env:
+          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
+          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
+          REALM: ${{ inputs.realm || 'khadgar' }}
+          GUILD: ${{ inputs.guild || 'Riddle of Steel' }}
+          REGION: ${{ inputs.region || 'us' }}
+        run: |
+          if [ -z "$BLIZZARD_CLIENT_ID" ] || [ -z "$BLIZZARD_CLIENT_SECRET" ]; then
+            echo "::error::BLIZZARD_CLIENT_ID / BLIZZARD_CLIENT_SECRET are not set as repository secrets."
+            exit 1
+          fi
+
+          python Tools/fetch_guild_info.py \
+            --region "$REGION" \
+            --realm "$REALM" \
+            --guild "$GUILD" \
+            --out new.lua
+
+      - name: Decide whether to publish
+        id: compare
+        run: |
+          set +e
+          if [ "${{ steps.published.outputs.exists }}" = "true" ]; then
+            python Tools/compare_guild_data.py --new new.lua --old old.lua --summary commit-msg.txt
+          else
+            python Tools/compare_guild_data.py --new new.lua --summary commit-msg.txt
+          fi
+          status=$?
+          set -e
+
+          case "$status" in
+            0)
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              ;;
+            1)
+              if [ "${{ inputs.force }}" = "true" ]; then
+                echo "Unchanged, but force was requested."
+                echo "Refresh guild data timestamp" > commit-msg.txt
+                echo "publish=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "publish=false" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            *)
+              echo "::error::The new export failed its sanity check. Nothing was published."
+              exit 1
+              ;;
+          esac
+
+      - name: Publish to data branch
+        if: steps.compare.outputs.publish == 'true'
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          if [ "${{ steps.published.outputs.branch }}" = "true" ]; then
+            git worktree add publish "origin/$DATA_BRANCH"
+            git -C publish switch -C "$DATA_BRANCH"
+          else
+            git worktree add --detach publish HEAD
+            git -C publish switch --orphan "$DATA_BRANCH"
+            # An orphan branch inherits the working tree; clear it so the
+            # data branch holds nothing but the payload.
+            find publish -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          fi
+
+          cp new.lua "publish/$DATA_FILE"
+
+          cat > publish/README.md <<'EOF'
+          # Riddled guild data
+
+          Generated by the `Guild data` workflow. Do not edit or open pull
+          requests against this branch -- it is overwritten by automation and
+          holds no source code.
+
+          `GuildData.lua` is consumed by `Tools/Update-Riddled.ps1` on the
+          default branch.
+          EOF
+
+          git -C publish add "$DATA_FILE" README.md
+          git -C publish commit -F "$GITHUB_WORKSPACE/commit-msg.txt"
+          git -C publish push origin "$DATA_BRANCH"
+
+          echo "Published to $DATA_BRANCH."
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Guild data"
+            echo
+            if [ "${{ steps.compare.outputs.publish }}" = "true" ]; then
+              echo "Published: $(cat commit-msg.txt 2>/dev/null || echo 'see log')"
+            else
+              echo "No item level changes; nothing published."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
