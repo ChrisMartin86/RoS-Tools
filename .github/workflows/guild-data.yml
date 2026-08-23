@@ -7,9 +7,9 @@ name: Guild data
 # Nothing is committed unless item levels actually changed -- the exporter
 # stamps a fresh generated_at every run, so a plain file diff is always dirty.
 #
-# Requires two repository secrets:
-#   BLIZZARD_CLIENT_ID
-#   BLIZZARD_CLIENT_SECRET
+# Requires two repository secrets/vars:
+#   BLIZZARD_CLIENT_ID -> Variable
+#   BLIZZARD_CLIENT_SECRET -> Secret
 # Create them at https://develop.battle.net/access/clients
 
 on:
@@ -82,7 +82,7 @@ jobs:
 
       - name: Export roster
         env:
-          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
+          BLIZZARD_CLIENT_ID: ${{ vars.BLIZZARD_CLIENT_ID }}
           BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}
           REALM: ${{ inputs.realm || 'khadgar' }}
           GUILD: ${{ inputs.guild || 'Riddle of Steel' }}
