@@ -5,11 +5,16 @@ local _, ns = ...
 
 ns.GuildData = {
   meta = {
-    generated_at = "2026-08-23 17:24:24",
+    -- generated_epoch is the authority: a plain UTC epoch, so the addon can
+    -- age the data without knowing what zone this machine was in.
+    -- generated_at is the same instant rendered as UTC, kept for humans
+    -- reading the file and as the fallback for schema 2 readers.
+    generated_epoch = 1787509007,
+    generated_at = "2026-08-23 18:16:47",
     region = "us",
     realm = "khadgar",
     guild = "riddle-of-steel",
-    schema = 2,
+    schema = 3,
   },
   ilvls = {
     ["Aep-baelgun"] = 293,
@@ -158,7 +163,7 @@ ns.GuildData = {
     ["Necropolis-zuljin"] = 18,
     ["Nomi-khadgar"] = 78,
     ["Norb-mannoroth"] = 291,
-    ["Ohwow-dalaran"] = 298,
+    ["Ohwow-dalaran"] = 300,
     ["Omgitsmagic-arygos"] = 253,
     ["Onoos-the-forgotten-coast"] = 267,
     ["Oscargrouch-mannoroth"] = 290,
