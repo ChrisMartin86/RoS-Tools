@@ -76,13 +76,34 @@ function Data:Meta()
   return meta
 end
 
+--- The export instant as a UTC epoch, or nil on a schema 2 file that
+--- predates it.
+function Data:GeneratedEpoch()
+  ensureBuilt()
+  return tonumber(meta.generated_epoch)
+end
+
+--- The export time formatted for display, in the *viewer's* local zone.
+--- Schema 3 carries a UTC epoch, so this is exact no matter where the
+--- exporter ran. Schema 2 only has a bare wall-clock string with no offset
+--- recorded; there is nothing to convert it from, so it is shown verbatim.
 function Data:GeneratedAt()
   ensureBuilt()
+  local epoch = self:GeneratedEpoch()
+  if epoch then
+    return date("%Y-%m-%d %H:%M:%S", epoch)
+  end
   return meta.generated_at
 end
 
+--- Whole days since the export. Epoch arithmetic when we have an epoch --
+--- both sides are UTC and no zone enters into it.
 function Data:AgeInDays()
-  return ns.Util.DaysSince(self:GeneratedAt())
+  local epoch = self:GeneratedEpoch()
+  if epoch then
+    return ns.Util.DaysSinceEpoch(epoch)
+  end
+  return ns.Util.DaysSince(meta.generated_at)
 end
 
 function Data:IsStale()

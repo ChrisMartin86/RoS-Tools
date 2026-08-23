@@ -1,5 +1,85 @@
 # Changelog
 
+## 2.2.0
+
+### Fixed
+
+- **Export age is timezone-proof.** `Tools/fetch_guild_info.py` wrote
+  `generated_at` with `time.strftime()` — local wall clock, no offset
+  recorded — and the addon parsed it back with `time(table)`, which reads a
+  table in the *client's* zone. An export made west of the player therefore
+  landed in the future and reported "exported -1 days ago". The exporter now
+  emits `generated_epoch`, a plain UTC epoch, and renders `generated_at` as
+  UTC; `Data:AgeInDays()` does epoch arithmetic against `time()` with no zone
+  in the middle, and `Data:GeneratedAt()` formats the epoch back into the
+  viewer's local time for display. Data schema is now 3. Schema 2 files still
+  load and fall back to the old string parse, clamped at 0 days.
+- **Roster item level no longer doubles.** The suffix pattern was anchored to
+  end-of-string, but Blizzard appends its own trailing text to the name on
+  alt-grouped rows, which put the suffix mid-string. The anchored strip missed
+  it and the next refresh stacked a second `(ilvl)` on top. The strip is now
+  unanchored and removes every occurrence, which also repairs rows a previous
+  build had already doubled.
+- **Roster name matching survives cosmetic differences.** `findNameFontString`
+  compared displayed text to `memberInfo.name` byte for byte. It now compares
+  on a collapsed key (colors stripped — including retail's newer
+  `|cnCOLOR_NAME:` form — then punctuation and whitespace removed, lowercased)
+  and scores candidates, preferring an exact match on the full `Name-Realm`,
+  then the bare name, then a string that starts with the full name. That last
+  rank is what alt-grouped rows need. A bare-name prefix is deliberately not
+  accepted; it would match the note and zone columns.
+- **`memberInfo.name` no longer goes through `Util.NormalizeKey`.** That
+  helper strips a displayed player title by taking the last whitespace-
+  delimited token, which is right for a tooltip header and wrong for a
+  mixin-driven field: it turned `Helltz-Moon Guard` into `Guard`. Realms with
+  spaces now resolve on the roster.
+- **Unit tooltips bail on non-players before doing any work.** The
+  `TooltipDataProcessor` hook fires for every unit in the game. When the GUID
+  and unit lookups failed it fell through to parsing the tooltip header, where
+  the title-strip turns an NPC's name into a plausible-looking key
+  ("Auction House Resident" -> `Resident-<realm>`), burning a lookup and a
+  debug line per frame. It now returns early unless the GUID is `Player-*` or
+  `UnitIsPlayer` is true, and the header fallback only runs when there was
+  neither a GUID nor a unit.
+
+### Changed
+
+- **Debug output is deduplicated.** `UpdateNameFrame` fires many times per
+  second per visible row, and every miss logged every time. Roster results are
+  now cached per entry frame in a weak-keyed table: an unchanged row returns
+  without walking the widget tree, and a member with no data logs once instead
+  of once per tick. Pooled rows with no `memberInfo`, the disabled-module
+  notice, and repeated tooltip misses log once as well.
+
+## 2.1.0
+
+### Added
+
+- **Item level on roster hover.** `CommunitiesMemberListEntryMixin`'s
+  `OnEnter`/`OnLeave` are hooked alongside the existing `UpdateNameFrame`
+  hook. Blizzard only builds a tooltip for a row in some states, so the
+  hook appends to the tooltip when one is already up and owned by that
+  row, and builds its own otherwise. Hooking the hover handlers is
+  optional and separate: if Blizzard renames them, the name annotation
+  keeps working. Setting: `rosterTooltip`.
+- **Item level on chat name hover.** A name in guild chat is a
+  `|Hplayer:Name-Realm:...|` hyperlink, and Blizzard's
+  `HYPERLINKS_WITH_TOOLTIPS` deliberately excludes `player` — so no
+  tooltip exists to append to and Riddled builds the whole thing, header
+  included. The chat frames' own `OnHyperlinkEnter`/`OnHyperlinkLeave`
+  scripts are hooked rather than the global `ChatFrame_OnHyperlinkEnter`,
+  since chat replacement addons reuse the frames but not always the
+  global. Temporary whisper tabs are picked up via `FCF_OpenTemporaryWindow`.
+  `BNplayer` links are ignored — a Battle.net link identifies an account,
+  not a character. Setting: `chatTooltip`.
+
+### Changed
+
+- Item level rendering (tier color plus the optional delta) moved into
+  `ns.IlvlText` in `Core/Config.lua`, and the tooltip block into
+  `ns.AddIlvlLines`, so the four surfaces that print a number can't drift
+  apart.
+
 ## Unreleased
 
 ### Added

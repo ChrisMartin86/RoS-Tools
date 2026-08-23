@@ -13,6 +13,8 @@ local DEFAULTS = {
   colorByIlvl    = true,   -- color the number by threshold
   showDelta      = false,  -- show +/- vs. your own equipped ilvl
   rosterColumn   = true,   -- append ilvl in the guild/community roster
+  rosterTooltip  = true,   -- ilvl in the hover tooltip over a roster row
+  chatTooltip    = true,   -- ilvl when hovering a player name in chat
   suppressInCombat = false,-- hide the line while in combat
   debug          = false,
 }
@@ -35,6 +37,26 @@ function ns.ColorForIlvl(ilvl)
     if ilvl >= tier.min then return tier.hex end
   end
   return ns.COLOR.value
+end
+
+--- The rendered item level: colored by tier, optionally suffixed with the
+--- delta against your own equipped item level. Every surface that prints a
+--- number goes through here so they can't drift apart.
+function ns.IlvlText(ilvl)
+  local text = ns.ColorForIlvl(ilvl) .. ilvl .. ns.COLOR.reset
+
+  if ns.db and ns.db.showDelta and ns.Data then
+    local mine = ns.Data:PlayerIlvl()
+    if mine then
+      local delta = ilvl - mine
+      if delta ~= 0 then
+        local color = delta > 0 and "|cffff6666" or "|cff66ff66"
+        text = ("%s %s%+d%s"):format(text, color, delta, ns.COLOR.reset)
+      end
+    end
+  end
+
+  return text
 end
 
 function ns.LoadConfig()

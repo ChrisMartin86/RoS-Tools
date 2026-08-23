@@ -2,11 +2,11 @@
 ## Title: Riddled
 ## Notes: Shows guild item levels from an external Blizzard API export.
 ## Author: Icebyte-Moon Guard
-## Version: 2.0.0
+## Version: 2.2.0
 ## SavedVariables: RiddledDB
 ## IconTexture: Interface\Icons\INV_Misc_Book_09
 ## X-Category: Guild
-## X-Website: https://github.com/ChrisMartin86/Riddled
+## X-Website: https://github.com/ChrisMartin86/Riddled2.0
 ## X-License: MIT
 
 # Core -- load order matters

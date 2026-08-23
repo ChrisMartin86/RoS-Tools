@@ -53,7 +53,7 @@ param(
 
     # The guild-data branch is written daily by the Guild data workflow. It
     # holds nothing but the payload, so this URL is stable.
-    [string] $RepoUrl = 'https://raw.githubusercontent.com/ChrisMartin86/Riddled/guild-data/GuildData.lua',
+    [string] $RepoUrl = 'https://raw.githubusercontent.com/ChrisMartin86/Riddled2.0/guild-data/GuildData.lua',
 
     [string] $Realm = 'khadgar',
 
@@ -270,8 +270,14 @@ function Show-DataSummary {
 # ----------------------------------------------------------------------
 function Get-ResponseETag {
     <#
-        Windows PowerShell 5.1 exposes headers as string values; PowerShell 7
-        exposes them as string collections. Normalise to one string, or $null.
+        Windows PowerShell 5.1 exposes Invoke-WebRequest's Headers as
+        Dictionary<string,string>; PowerShell 7 exposes it as
+        Dictionary<string,string[]>. Neither flavor has a public
+        Contains(key) overload -- Dictionary<TKey,TValue> only exposes
+        ContainsKey(TKey); Contains(KeyValuePair) is an explicit interface
+        implementation that needs a KeyValuePair, not a bare string, so
+        calling .Contains('ETag') throws "Cannot find an overload for
+        Contains and the argument count: 1". Use ContainsKey instead.
     #>
     param($Response)
 
@@ -281,8 +287,11 @@ function Get-ResponseETag {
     if (-not $headers) { return $null }
 
     $value = $null
-    if ($headers -is [System.Collections.IDictionary]) {
-        if ($headers.Contains('ETag')) { $value = $headers['ETag'] }
+    if ($headers -is [System.Net.WebHeaderCollection]) {
+        $value = $headers['ETag']
+    }
+    elseif ($headers.PSObject.Methods.Name -contains 'ContainsKey') {
+        if ($headers.ContainsKey('ETag')) { $value = $headers['ETag'] }
     }
     else {
         foreach ($entry in $headers.GetEnumerator()) {

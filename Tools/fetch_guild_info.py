@@ -129,11 +129,16 @@ local _, ns = ...
 
 ns.GuildData = {{
   meta = {{
+    -- generated_epoch is the authority: a plain UTC epoch, so the addon can
+    -- age the data without knowing what zone this machine was in.
+    -- generated_at is the same instant rendered as UTC, kept for humans
+    -- reading the file and as the fallback for schema 2 readers.
+    generated_epoch = {generated_epoch},
     generated_at = "{generated_at}",
     region = "{region}",
     realm = "{realm}",
     guild = "{guild}",
-    schema = 2,
+    schema = 3,
   }},
   ilvls = {{
 """
@@ -225,8 +230,13 @@ def main() -> int:
             if index % 25 == 0:
                 print(f"  {index}/{len(targets)}")
 
+    generated = time.time()
     meta = {
-        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        # UTC on both counts. time.strftime() with no time argument uses
+        # local wall clock and records no offset, which left the addon
+        # unable to tell how old the export actually was.
+        "generated_epoch": int(generated),
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(generated)),
         "region": args.region,
         "realm": realm_slug,
         "guild": guild_slug,

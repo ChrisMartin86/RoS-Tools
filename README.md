@@ -75,6 +75,8 @@ lookup.
 | `colorByIlvl` | on | Color the number by quality tier |
 | `showDelta` | off | Show +/- against your own equipped ilvl |
 | `rosterColumn` | on | Annotate the Guild & Communities roster |
+| `rosterTooltip` | on | Add the ilvl line to the roster row hover tooltip |
+| `chatTooltip` | on | Show a tooltip when hovering a player name in chat |
 | `suppressInCombat` | off | Hide the line while in combat |
 | `debug` | off | Verbose logging |
 

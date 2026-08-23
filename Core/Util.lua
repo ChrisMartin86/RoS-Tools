@@ -115,11 +115,30 @@ function Util.ParseTimestamp(stamp)
   })
 end
 
+--- Whole days elapsed since a UTC epoch. Both sides are epochs, so this is
+--- the timezone-proof path and the one schema 3 data uses.
+function Util.DaysSinceEpoch(epoch)
+  epoch = tonumber(epoch)
+  if not epoch then return nil end
+  local days = math.floor((time() - epoch) / 86400)
+  if days < 0 then return 0 end
+  return days
+end
+
 --- Whole days elapsed since a "YYYY-MM-DD HH:MM:SS" stamp.
+---
+--- Legacy path, for schema 2 data only. Such a stamp is bare wall clock with
+--- no offset recorded, and `time(table)` reads it in the *client's* zone --
+--- so an export made west of the player reads as up to a day in the future.
+--- Clamped at 0, because there is no honest sub-day answer to recover and
+--- "exported -1 days ago" is worse than "today". Schema 3 carries
+--- `generated_epoch` and avoids the guesswork entirely.
 function Util.DaysSince(stamp)
   local t = Util.ParseTimestamp(stamp)
   if not t then return nil end
-  return math.floor((time() - t) / 86400)
+  local days = math.floor((time() - t) / 86400)
+  if days < 0 then return 0 end
+  return days
 end
 
 --- Case-insensitive, accent-tolerant-ish comparison key for searching.
