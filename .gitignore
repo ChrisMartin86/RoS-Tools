@@ -16,6 +16,12 @@ output.txt
 *.lua.bak
 WTF/
 
+# .NET (Sidecar/)
+bin/
+obj/
+publish/
+*.user
+
 # Editors
 .vscode/
 .idea/

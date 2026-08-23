@@ -1,0 +1,27 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <WarningsAsErrors>nullable</WarningsAsErrors>
+
+    <!--
+      Lets `dotnet build` / `dotnet test` run on Linux and macOS even though the
+      tray app targets net10.0-windows. CI and the container both rely on this;
+      it is a no-op on Windows.
+    -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <Company>Riddle of Steel</Company>
+    <Product>RoS-Tools Sidecar</Product>
+    <Copyright>MIT</Copyright>
+
+    <!--
+      The sidecar versions independently of the addon. RoS-Tools.toc's
+      `## Version:` is the addon's source of truth and must not be tied to this.
+    -->
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+</Project>

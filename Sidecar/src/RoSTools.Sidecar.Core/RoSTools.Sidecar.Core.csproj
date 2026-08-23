@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      Deliberately NOT net10.0-windows. Everything in here is testable logic,
+      so the test suite runs on any OS (and on ubuntu-latest in CI). The few
+      Windows-only calls - the uninstall-registry lookup in AddOnLocator - are
+      guarded with OperatingSystem.IsWindows().
+    -->
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>RoSTools.Sidecar.Core</RootNamespace>
+    <AssemblyName>RoSTools.Sidecar.Core</AssemblyName>
+  </PropertyGroup>
+
+</Project>

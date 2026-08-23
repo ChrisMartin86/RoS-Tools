@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **Desktop sidecar (`Sidecar/`).** A .NET 10 Windows tray app that polls the
+  `guild-data` branch every few hours and installs `Data/GuildData.lua` into the
+  addon folder, so nobody has to remember to run the updater. Same validation
+  and `.bak` rollback as `Tools/Update-RoSTools.ps1`, just resident. It never
+  calls the Blizzard API — CI stays the single API consumer — and never touches
+  the WoW process. Ships as its own signed-later exe off a `sidecar-vX.Y.Z` tag;
+  the addon zip is unaffected and the addon itself is unchanged.
+
 ### Changed
 
 - **Renamed from Riddled to RoS-Tools.** Repository is now

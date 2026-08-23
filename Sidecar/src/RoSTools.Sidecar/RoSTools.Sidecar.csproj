@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <RootNamespace>RoSTools.Sidecar</RootNamespace>
+    <AssemblyName>RoSToolsSidecar</AssemblyName>
+    <ApplicationIcon>Resources\ros.ico</ApplicationIcon>
+
+    <!--
+      Publish knobs live in .github/workflows/sidecar.yml, not here, so a plain
+      `dotnet build` stays RID-agnostic and buildable on any OS. Trimming is
+      deliberately off: it breaks WinForms' reflection over designer types.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RoSTools.Sidecar.Core\RoSTools.Sidecar.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\ros.ico" />
+    <EmbeddedResource Include="Resources\ros-checking.ico" />
+    <EmbeddedResource Include="Resources\ros-error.ico" />
+  </ItemGroup>
+
+</Project>

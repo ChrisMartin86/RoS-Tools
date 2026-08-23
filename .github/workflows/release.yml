@@ -1,0 +1,248 @@
+name: Publish to CurseForge
+
+# Manual release only. Builds the addon zip and uploads it to the CurseForge
+# project. Nothing here runs on push -- a release is always a deliberate act.
+#
+# Requires:
+#   CURSEFORGE_PROJECT_ID -> Variable (the numeric project id, shown on the
+#                            project page under "About This Project")
+#   CURSEFORGE_TOKEN      -> Secret   (https://legacy.curseforge.com/account/api-tokens)
+#
+# The version comes from `## Version:` in RoS-Tools.toc -- bump it there first.
+# The changelog is the matching `## <version>` section of CHANGELOG.md.
+# Data/GuildData.lua is replaced with the freshest export from the guild-data
+# branch, so CurseForge users get current item levels rather than whatever was
+# last committed to main.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'CurseForge release type'
+        type: choice
+        options: [release, beta, alpha]
+        default: release
+      game_versions:
+        description: 'Override game versions (comma-separated, e.g. 12.0.0,11.2.7). Blank = derive from ## Interface.'
+        default: ''
+      dry_run:
+        description: 'Build and validate, but do not upload'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: curseforge-release
+  cancel-in-progress: false
+
+env:
+  ADDON_NAME: RoS-Tools
+  DATA_BRANCH: guild-data
+
+jobs:
+  publish:
+    name: Package and upload
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Read version and interface from the .toc
+        id: toc
+        run: |
+          toc="$ADDON_NAME.toc"
+          version=$(sed -n 's/^## Version:[[:space:]]*//p' "$toc" | head -1 | tr -d '\r')
+          interface=$(sed -n 's/^## Interface:[[:space:]]*//p' "$toc" | head -1 | tr -d '\r')
+
+          if [ -z "$version" ] || [ -z "$interface" ]; then
+            echo "::error::Could not read ## Version / ## Interface from $toc."
+            exit 1
+          fi
+
+          # 120000 -> 12.0.0
+          game_version=$(( interface / 10000 )).$(( interface / 100 % 100 )).$(( interface % 100 ))
+
+          echo "version=$version"           >> "$GITHUB_OUTPUT"
+          echo "interface=$interface"       >> "$GITHUB_OUTPUT"
+          echo "game_version=$game_version" >> "$GITHUB_OUTPUT"
+          echo "Version $version, interface $interface (game version $game_version)."
+
+      - name: Extract the changelog section
+        id: changelog
+        env:
+          VERSION: ${{ steps.toc.outputs.version }}
+        run: |
+          awk -v want="$VERSION" '
+            /^## / {
+              # Strip the leading "## " and any trailing whitespace/CR.
+              heading = $0
+              sub(/^## /, "", heading)
+              gsub(/[[:space:]\r]+$/, "", heading)
+              inside = (heading == want)
+              next
+            }
+            inside { print }
+          ' CHANGELOG.md > changelog.md
+
+          # Trim leading/trailing blank lines.
+          sed -i -e '/./,$!d' changelog.md
+          tac changelog.md | sed -e '/./,$!d' | tac > changelog.trimmed && mv changelog.trimmed changelog.md
+
+          if [ ! -s changelog.md ]; then
+            echo "::error::CHANGELOG.md has no '## $VERSION' section. Add one before releasing."
+            exit 1
+          fi
+
+          echo "Changelog for $VERSION:"
+          cat changelog.md
+
+      - name: Pull the freshest guild data
+        run: |
+          git fetch --depth=1 origin "$DATA_BRANCH"
+
+          if ! git show "origin/$DATA_BRANCH:GuildData.lua" > fresh-guild-data.lua; then
+            echo "::error::Could not read GuildData.lua from the $DATA_BRANCH branch."
+            exit 1
+          fi
+
+          # Cheap sanity check -- never ship a truncated or empty payload.
+          if ! grep -q 'ns.GuildData' fresh-guild-data.lua || ! grep -q 'generated_epoch' fresh-guild-data.lua; then
+            echo "::error::The $DATA_BRANCH copy of GuildData.lua does not look like an export."
+            exit 1
+          fi
+
+          cp fresh-guild-data.lua Data/GuildData.lua
+          echo "Packaged guild data: $(wc -c < Data/GuildData.lua) bytes."
+
+      - name: Build the zip
+        id: package
+        env:
+          VERSION: ${{ steps.toc.outputs.version }}
+        run: |
+          staging="build/$ADDON_NAME"
+          mkdir -p "$staging"
+
+          # Same exclusions the addon has always packaged with: no VCS metadata,
+          # no dev tooling, no markdown, no previous build output.
+          rsync -a \
+            --exclude '.git*' \
+            --exclude 'build' \
+            --exclude 'Tools' \
+            --exclude 'scripts' \
+            --exclude '*.md' \
+            --exclude 'changelog.md' \
+            --exclude 'fresh-guild-data.lua' \
+            ./ "$staging/"
+
+          if [ ! -f "$staging/$ADDON_NAME.toc" ]; then
+            echo "::error::$ADDON_NAME.toc is missing from the staged folder."
+            exit 1
+          fi
+
+          zip_name="$ADDON_NAME-$VERSION.zip"
+          (cd build && zip -r -q "../$zip_name" "$ADDON_NAME")
+
+          echo "zip=$zip_name" >> "$GITHUB_OUTPUT"
+          unzip -l "$zip_name"
+
+      - name: Resolve CurseForge game version ids
+        id: versions
+        env:
+          CF_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
+          WANTED: ${{ inputs.game_versions || steps.toc.outputs.game_version }}
+        run: |
+          if [ -z "$CF_TOKEN" ]; then
+            echo "::error::CURSEFORGE_TOKEN is not set as a repository secret."
+            exit 1
+          fi
+
+          curl -sSf -H "X-Api-Token: $CF_TOKEN" \
+            https://wow.curseforge.com/api/game/versions > versions.json
+
+          ids=$(WANTED="$WANTED" jq -c '
+            [ $ENV.WANTED | split(",") | .[] | gsub("^\\s+|\\s+$"; "") ] as $want
+            | [ .[] | select(.name as $n | $want | index($n)) | .id ]
+            | unique
+          ' versions.json)
+
+          if [ "$(echo "$ids" | jq 'length')" -eq 0 ]; then
+            echo "::error::No CurseForge game version matched '$WANTED'. Recent versions:"
+            jq -r 'sort_by(.id) | reverse | .[0:15] | .[] | "  \(.name) (id \(.id))"' versions.json
+            exit 1
+          fi
+
+          echo "ids=$ids" >> "$GITHUB_OUTPUT"
+          echo "Matched '$WANTED' -> $ids"
+
+      - name: Upload to CurseForge
+        if: ${{ !inputs.dry_run }}
+        env:
+          CF_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
+          PROJECT_ID: ${{ vars.CURSEFORGE_PROJECT_ID }}
+          VERSION: ${{ steps.toc.outputs.version }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          GAME_VERSION_IDS: ${{ steps.versions.outputs.ids }}
+          ZIP: ${{ steps.package.outputs.zip }}
+        run: |
+          if [ -z "$PROJECT_ID" ]; then
+            echo "::error::CURSEFORGE_PROJECT_ID is not set as a repository variable."
+            exit 1
+          fi
+
+          jq -n \
+            --rawfile changelog changelog.md \
+            --arg displayName "$ADDON_NAME $VERSION" \
+            --arg releaseType "$RELEASE_TYPE" \
+            --argjson gameVersions "$GAME_VERSION_IDS" \
+            '{
+              changelog: $changelog,
+              changelogType: "markdown",
+              displayName: $displayName,
+              gameVersions: $gameVersions,
+              releaseType: $releaseType
+            }' > metadata.json
+
+          http=$(curl -sS -w '%{http_code}' -o response.json \
+            -H "X-Api-Token: $CF_TOKEN" \
+            -F "metadata=<metadata.json" \
+            -F "file=@$ZIP" \
+            "https://wow.curseforge.com/api/projects/$PROJECT_ID/upload-file")
+
+          cat response.json
+
+          if [ "$http" -lt 200 ] || [ "$http" -ge 300 ]; then
+            echo "::error::CurseForge rejected the upload (HTTP $http)."
+            exit 1
+          fi
+
+          echo "file_id=$(jq -r '.id' response.json)" >> "$GITHUB_ENV"
+
+      - name: Keep the zip on the run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.zip }}
+          path: ${{ steps.package.outputs.zip }}
+          if-no-files-found: error
+
+      - name: Summary
+        if: always()
+        env:
+          VERSION: ${{ steps.toc.outputs.version }}
+          ZIP: ${{ steps.package.outputs.zip }}
+        run: |
+          {
+            echo "### CurseForge release"
+            echo
+            echo "- Version: \`$VERSION\`"
+            echo "- Package: \`$ZIP\`"
+            echo "- Game versions: \`${{ steps.versions.outputs.ids }}\`"
+            echo "- Release type: \`${{ inputs.release_type }}\`"
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "- **Dry run** -- nothing was uploaded."
+            elif [ -n "${file_id:-}" ]; then
+              echo "- Uploaded as file id \`$file_id\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -27,11 +27,13 @@ RoS-Tools/
 │   ├── Roster.lua              Guild & Communities roster annotation
 │   ├── Browser.lua             Standalone roster window
 │   └── Commands.lua            /ros slash commands
-└── Tools/
-    └── fetch_guild_info.py     Regenerates Data/GuildData.lua
+├── Tools/
+│   └── fetch_guild_info.py     Regenerates Data/GuildData.lua
+└── Sidecar/                    Desktop tray updater (.NET 10)
 ```
 
-`Tools/` is development-only and is excluded from the packaged addon.
+`Tools/` is development-only and is excluded from the packaged addon. `Sidecar/`
+ships separately as its own exe — see [Sidecar/README.md](Sidecar/README.md).
 
 ---
 
@@ -136,13 +138,18 @@ WoW addons cannot reach the internet — the Lua sandbox has no sockets. So the
 refresh happens in three hops, and only the last one is inside the game:
 
 ```
-GitHub Action (daily)  ──►  guild-data branch  ──►  companion  ──►  addon
+GitHub Action (daily)  ──►  guild-data branch  ──►  sidecar   ──►  addon
   hits the Blizzard API      holds GuildData.lua     writes it      reads it
                                                      into AddOns    at load
 ```
 
-Nobody has to do anything by hand. Guildmates just launch through the
-companion; it drops the current file in place before the game starts.
+Nobody has to do anything by hand. The sidecar sits in the system tray and keeps
+the file current; the PowerShell updaters below do the same thing on demand for
+anyone who would rather not run a background app.
+
+Note that only the first hop touches Blizzard. One export a day serves the whole
+guild — nothing on a guildmate's PC ever calls the API, which is why no client
+secret is ever handed out.
 
 ### The daily job
 
@@ -175,9 +182,23 @@ would wipe everyone's data.
 Run it by hand from the Actions tab; `force` publishes even with no changes,
 and realm/guild/region can be overridden per run.
 
+### The sidecar (recommended)
+
+A small tray app that polls the `guild-data` branch every few hours and drops the
+new roster into your addon folder. Download `RoSToolsSidecar.exe` from the
+[latest release](https://github.com/ChrisMartin86/RoS-Tools/releases), run it once,
+and let it start with Windows. Nothing else to do — the numbers just stay current.
+
+Full details, including what it writes and why it doesn't break any rules:
+**[Sidecar/README.md](Sidecar/README.md)**.
+
+It never contacts Blizzard, never touches the game process, and refuses to install
+anything that doesn't validate as a real export — same guarantees as the scripts
+below, on a timer.
+
 ### Refreshing on a PC
 
-For guildmates, one line in PowerShell:
+If you'd rather not run a background app, one line in PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/ChrisMartin86/RoS-Tools/main/scripts/Update-RoSToolsData.ps1 | iex

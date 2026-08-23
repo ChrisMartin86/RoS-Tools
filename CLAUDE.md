@@ -10,10 +10,13 @@ Community API export. The addon never calls out to the internet; it reads
 `Data/GuildData.lua`, which is regenerated out-of-band by
 `Tools/fetch_guild_info.py`.
 
-Two languages, cleanly split:
+Three languages, cleanly split:
 
 - **Lua 5.1** — everything under `Core/`, `Modules/`, `Data/`. Ships to users.
 - **Python 3** — `Tools/` only. Development-only; excluded from the packaged zip.
+- **C# / .NET 10** — `Sidecar/` only. A Windows tray app that keeps
+  `Data/GuildData.lua` current in the background. Ships to users as its own exe;
+  never inside the addon zip.
 
 ## Hard constraints
 
@@ -145,7 +148,8 @@ well as 7. That imposes four rules, all easy to break by accident:
   engine, which Windows 11 does not ship.
 - **Self-contained.** They must not dot-source anything from the repo, so the
   `Test-GuildData` validator is duplicated from `Tools/Update-RoSTools.ps1` on
-  purpose. Fix a validation bug in all three places.
+  purpose. A fourth copy now lives in `Sidecar/` as
+  `GuildDataValidator.cs`. Fix a validation bug in **all four** places.
 
 Lint them with PSScriptAnalyzer before pushing; `PSAvoidUsingWriteHost` is
 expected and ignored, since these are console-facing by design.
@@ -163,7 +167,48 @@ They are served raw from `main`, so a bad push to those two files breaks
 installs immediately — there is no release gate in front of them.
 `scripts/Deploy-RoSTools.ps1` is unrelated: local dev-loop copy, never handed out.
 
+## The sidecar
+
+`Sidecar/` is a Windows tray app (.NET 10 LTS, WinForms) that polls the
+`guild-data` branch and writes `Data/GuildData.lua` into the installed addon —
+`Tools/Update-RoSTools.ps1` in Download mode, made resident. The addon is
+unchanged by it and knows nothing about it.
+
+- **It must never call the Blizzard API.** That would put the client secret on
+  every guildmate's machine and multiply a ~180-call export by the number of
+  installs. CI is the single API consumer; the sidecar only reads what CI
+  publishes. Same rule as the addon: no secret on the user side, ever.
+- **It must never touch the WoW process.** No memory access, no injection, no
+  input automation, no enumerating `Wow.exe`. It opens exactly three paths under
+  `_retail_`: `Data\GuildData.lua`, its `.bak`, and nothing else. That line is
+  what separates a file updater from something Blizzard would action, and it is
+  the reason the design is defensible at all.
+- **Logic lives in `RoSTools.Sidecar.Core` (`net10.0`), UI in
+  `RoSTools.Sidecar` (`net10.0-windows`).** The split exists so the test suite
+  runs on `ubuntu-latest`; don't move testable logic into the WinForms project.
+  `Directory.Build.props` sets `EnableWindowsTargeting`, so the whole solution
+  builds on Linux and macOS.
+- **Trimming stays off when publishing.** It breaks WinForms' reflection over
+  designer types.
+- **`Sidecar` must be in the rsync exclusion list in
+  `.github/workflows/release.yml`,** alongside `Tools` and `scripts`. Without it
+  ~40 C# files ride along inside the CurseForge zip. `unzip -l` runs at the end
+  of the package step — check it after touching that list.
+
+```powershell
+dotnet build .\Sidecar\RoSTools.Sidecar.sln
+dotnet test  .\Sidecar\RoSTools.Sidecar.sln
+```
+
+Behavioral changes still need a Windows run — the tray, the Run key and the
+registry probe have no coverage.
+
 ## Versioning
 
-`## Version:` in `RoS-Tools.toc` is the source of truth — CI greps it for the zip
-name. Bump it and add a `CHANGELOG.md` entry in the same commit.
+`## Version:` in `RoS-Tools.toc` is the source of truth for the **addon** — CI
+greps it for the zip name. Bump it and add a `CHANGELOG.md` entry in the same
+commit.
+
+The **sidecar** versions independently, off a `sidecar-vX.Y.Z` tag, which
+`.github/workflows/sidecar.yml` turns into a release. Don't tie the two together;
+a roster-format change is the only thing that would ever move both.
