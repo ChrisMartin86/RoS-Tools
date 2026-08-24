@@ -154,7 +154,10 @@ function Resolve-AddOnPath {
     }
 
     # Running from inside a checkout of the repo? Update the checkout.
-    $repoRoot = Split-Path -Parent $PSScriptRoot
+    # $PSScriptRoot is empty when the script has no file on disk, e.g. when
+    # invoked via `irm ... | iex` -- guard against that instead of letting
+    # Split-Path throw "Cannot bind argument to parameter 'Path'".
+    $repoRoot = if ($PSScriptRoot) { Split-Path -Parent $PSScriptRoot } else { $null }
     if ($repoRoot -and (Test-Path (Join-Path $repoRoot 'RoS-Tools.toc'))) {
         return $repoRoot
     }
@@ -343,9 +346,9 @@ function Get-EffectiveMode {
     if ($Requested -ne 'Auto') { return $Requested }
 
     $hasCredentials = $env:BLIZZARD_CLIENT_ID -and $env:BLIZZARD_CLIENT_SECRET
-    $exporter = Join-Path $PSScriptRoot 'fetch_guild_info.py'
+    $exporter = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'fetch_guild_info.py' } else { $null }
 
-    if ($hasCredentials -and (Test-Path $exporter)) { return 'Export' }
+    if ($hasCredentials -and $exporter -and (Test-Path $exporter)) { return 'Export' }
 
     return 'Download'
 }
@@ -353,9 +356,9 @@ function Get-EffectiveMode {
 function Invoke-ExportMode {
     param([string] $Destination)
 
-    $exporter = Join-Path $PSScriptRoot 'fetch_guild_info.py'
-    if (-not (Test-Path $exporter)) {
-        throw "Export mode needs fetch_guild_info.py next to this script."
+    $exporter = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'fetch_guild_info.py' } else { $null }
+    if (-not $exporter -or -not (Test-Path $exporter)) {
+        throw "Export mode needs fetch_guild_info.py next to this script (not available when run via irm | iex)."
     }
 
     $python = Get-Command python -ErrorAction SilentlyContinue
