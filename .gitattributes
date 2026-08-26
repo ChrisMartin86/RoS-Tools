@@ -1,0 +1,15 @@
+# Normalize line endings for everything git treats as text, on both
+# checkin and checkout, regardless of any given clone's core.autocrlf.
+# Mirrors .editorconfig's `end_of_line = lf` / CLAUDE.md's "LF endings"
+# convention. This is what actually stops the CRLF/LF fight -- without it,
+# a Windows editor (VS, a Lua/PS1 editor set to CRLF) resaving a file with
+# CRLF makes every future diff a full-file rewrite instead of the real
+# change.
+* text=auto eol=lf
+
+# Genuinely binary -- never touch, never diff as text.
+*.ico -text
+*.png -text
+*.exe -text
+*.dll -text
+*.zip -text

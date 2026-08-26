@@ -12,6 +12,13 @@ local meta    = {}
 local count   = 0
 local built   = false
 
+-- Live overlay, fed by Core/Comm.lua over the addon-message channel.
+-- In-memory only, session-scoped -- gone on /reload, never written to
+-- RoSToolsDB or any file. Mirrors ilvls/lowered so lookups can treat it
+-- the same way.
+local liveOverlay       = {}   -- ["Name-realm-slug"] = ilvl
+local liveOverlayLowered = {}  -- lowercased key -> canonical key
+
 -- ------------------------------------------------------------------
 -- Build
 -- ------------------------------------------------------------------
@@ -20,6 +27,11 @@ function Data:Build()
   wipe(lowered)
   wipe(meta)
   count = 0
+  -- liveOverlay is NOT wiped here. Build() only ever fires once, at
+  -- ADDON_LOADED, before Comm.lua has received anything, so this is moot
+  -- today -- but if Build() is ever called again mid-session (e.g. a
+  -- future "/ros reload"), wiping live data an online guildmate just sent
+  -- would be actively wrong.
 
   local source = ns.GuildData
   if type(source) == "table" then
@@ -57,6 +69,51 @@ function Data:Build()
   built = true
   ns.Debug(("data built: %d entries"):format(count))
   return count
+end
+
+-- ------------------------------------------------------------------
+-- Live overlay -- fed by Core/Comm.lua, read by every query below.
+-- ------------------------------------------------------------------
+
+--- Record a live ilvl update received over addon comm. In-memory only --
+--- never touches RoSToolsDB or the static ilvls table. The next
+--- ADDON_LOADED rebuild is what "resets" it, same as everything else here.
+function Data:ApplyLiveUpdate(key, ilvl)
+  if type(key) ~= "string" or key == "" then return end
+  local n = tonumber(ilvl)
+  if not n then return end
+  n = math.floor(n)
+  liveOverlay[key] = n
+  liveOverlayLowered[key:lower()] = key
+end
+
+--- True if `key`'s current value comes from the live overlay rather than
+--- the static export. Not surfaced in the UI yet -- follow-up for
+--- Tooltip.lua/Roster.lua to flag a number as "live".
+function Data:IsLive(key)
+  if type(key) ~= "string" then return false end
+  local canonical = liveOverlay[key] ~= nil and key or liveOverlayLowered[key:lower()]
+  return canonical ~= nil and liveOverlay[canonical] ~= nil
+end
+
+--- Merge the live overlay over the static table into one flat array of
+--- {key=, ilvl=} entries. Overlay entries win on key collision and are
+--- included even when they have no static counterpart (there won't be any
+--- in practice, since Comm only ever hears from existing guild members,
+--- but this doesn't assume that).
+local function mergedEntries()
+  local seen = {}
+  local results = {}
+  for key, ilvl in pairs(liveOverlay) do
+    results[#results + 1] = { key = key, ilvl = ilvl }
+    seen[key] = true
+  end
+  for key, ilvl in pairs(ilvls) do
+    if not seen[key] then
+      results[#results + 1] = { key = key, ilvl = ilvl }
+    end
+  end
+  return results
 end
 
 local function ensureBuilt()
@@ -112,10 +169,16 @@ function Data:IsStale()
   return days >= (ns.db.staleDays or 14)
 end
 
---- Look up by exact key ("Name-realm-slug").
+--- Look up by exact key ("Name-realm-slug"). The live overlay -- if
+--- Comm.lua has heard from this key this session -- wins over the static
+--- export.
 function Data:GetByKey(key)
   ensureBuilt()
   if type(key) ~= "string" then return nil end
+  local overlayKey = liveOverlay[key] ~= nil and key or liveOverlayLowered[key:lower()]
+  if overlayKey and liveOverlay[overlayKey] ~= nil then
+    return liveOverlay[overlayKey]
+  end
   return ilvls[key] or ilvls[lowered[key:lower()] or ""]
 end
 
@@ -145,14 +208,17 @@ function Data:GetForGUID(guid)
   return self:GetByKey(key), key
 end
 
---- Substring search over keys. Returns a sorted array of {key, ilvl}.
+--- Substring search over keys (live overlay merged over the static
+--- table). Returns a sorted array of {key, ilvl}.
 function Data:Find(needle, limit)
   ensureBuilt()
   needle = tostring(needle or ""):lower()
   local results = {}
-  for key, ilvl in pairs(ilvls) do
-    if key:lower():find(needle, 1, true) then
-      results[#results + 1] = { key = key, ilvl = ilvl }
+  local entries = mergedEntries()
+  for i = 1, #entries do
+    local entry = entries[i]
+    if entry.key:lower():find(needle, 1, true) then
+      results[#results + 1] = entry
     end
   end
   table.sort(results, function(a, b)
@@ -165,13 +231,10 @@ function Data:Find(needle, limit)
   return results
 end
 
---- Top N by item level.
+--- Top N by item level (live overlay merged over the static table).
 function Data:Top(n)
   ensureBuilt()
-  local results = {}
-  for key, ilvl in pairs(ilvls) do
-    results[#results + 1] = { key = key, ilvl = ilvl }
-  end
+  local results = mergedEntries()
   table.sort(results, function(a, b)
     if a.ilvl ~= b.ilvl then return a.ilvl > b.ilvl end
     return a.key < b.key
@@ -181,15 +244,17 @@ function Data:Top(n)
   return results
 end
 
---- Mean / median / min / max across the roster.
+--- Mean / median / min / max across the roster (live overlay merged
+--- over the static table).
 function Data:Stats()
   ensureBuilt()
+  local entries = mergedEntries()
+  if #entries == 0 then return nil end
   local values, sum = {}, 0
-  for _, ilvl in pairs(ilvls) do
-    values[#values + 1] = ilvl
-    sum = sum + ilvl
+  for i = 1, #entries do
+    values[i] = entries[i].ilvl
+    sum = sum + entries[i].ilvl
   end
-  if #values == 0 then return nil end
   table.sort(values)
   local mid = math.floor(#values / 2)
   local median = (#values % 2 == 1) and values[mid + 1]

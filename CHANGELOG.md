@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Live ilvl sync over addon comm (`Core/Comm.lua`).** While you're online
+  with a guildmate, their equipped item level now updates in real time
+  instead of waiting on the next static export or Sidecar poll. Each client
+  broadcasts only its own ilvl, only on change, only to the `GUILD` channel
+  (prefix `RoSTools1`) -- no roster sync, no server, nothing that leaves the
+  game client. New options `commEnabled` and `commBroadcast` (both default
+  on) gate receiving and sending independently.
 - **Desktop sidecar (`Sidecar/`).** A .NET 10 Windows tray app that polls the
   `guild-data` branch every few hours and installs `Data/GuildData.lua` into the
   addon folder, so nobody has to remember to run the updater. Same validation

@@ -16,6 +16,8 @@ local DEFAULTS = {
   rosterTooltip  = true,   -- ilvl in the hover tooltip over a roster row
   chatTooltip    = true,   -- ilvl when hovering a player name in chat
   suppressInCombat = false,-- hide the line while in combat
+  commEnabled    = true,   -- live ilvl updates from online guildmates via addon comm
+  commBroadcast  = true,   -- announce your own ilvl on change (off = receive only)
   debug          = false,
 }
 
