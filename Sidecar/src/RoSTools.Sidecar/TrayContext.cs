@@ -3,6 +3,8 @@ using System.Globalization;
 using System.Runtime.Versioning;
 using System.Threading;
 using RoSTools.Sidecar.Core;
+using RoSTools.Sidecar.Core.Blizzard;
+using RoSTools.Sidecar.Core.Web;
 
 namespace RoSTools.Sidecar;
 
@@ -17,6 +19,14 @@ public sealed class TrayContext : ApplicationContext
     private readonly GuildDataClient _client = new();
     private readonly UpdateService _updates;
     private readonly PollService _poll;
+
+    /// <summary>
+    /// The data console. Started lazily on first use: it opens a listening socket
+    /// and mints a session token, and the great majority of runs never touch it.
+    /// </summary>
+    private readonly Lock _consoleGate = new();
+    private PullService? _pulls;
+    private ConsoleServer? _console;
 
     private readonly NotifyIcon _icon;
     private readonly ToolStripMenuItem _statusItem;
@@ -49,6 +59,7 @@ public sealed class TrayContext : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(_checkItem);
         menu.Items.Add(new ToolStripMenuItem("Open addon folder", null, (_, _) => OpenAddOnFolder()));
+        menu.Items.Add(new ToolStripMenuItem("Data console...", null, (_, _) => OpenConsole()));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("Settings...", null, (_, _) => ShowSettings()));
         menu.Items.Add(new ToolStripMenuItem("Quit", null, (_, _) => Quit()));
@@ -145,8 +156,74 @@ public sealed class TrayContext : ApplicationContext
             summary = "No roster installed yet";
         }
 
+        // Nothing above ages. Without the checks below, a poll loop that died on day
+        // one renders "180 characters - updated 9 days ago" under a healthy icon for
+        // as long as the process runs, and the only evidence is a line in the log.
+        var warning = StaleWarning(settings);
+        if (warning is not null)
+        {
+            _statusItem.Text = Truncate($"{summary} - {warning}", 60);
+            SetIcon(TrayState.Warning, Truncate($"RoS-Tools Sidecar\n{summary}\n{warning}", 127));
+            return;
+        }
+
         _statusItem.Text = summary;
         SetIcon(TrayState.Idle, Truncate($"RoS-Tools Sidecar\n{summary}", 127));
+    }
+
+    /// <summary>
+    /// Why the user should look at this, or null when there is nothing to say.
+    /// Checks that have stopped come first: a roster aging because nothing is
+    /// fetching is the same symptom, and naming the cause is more useful.
+    /// </summary>
+    private static string? StaleWarning(SidecarSettings settings)
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        if (settings.LastCheckUtc is { } checkedAt)
+        {
+            // Three intervals: past two consecutive misses, this is not jitter.
+            var budget = TimeSpan.FromHours(settings.EffectivePollHours * 3);
+            if (now - checkedAt > budget)
+            {
+                return $"no check since {Relative(checkedAt)}";
+            }
+        }
+
+        if (settings.LastGeneratedEpoch is { } epoch)
+        {
+            // Guarded: this value is read straight out of sidecar.json, and
+            // RefreshStatus runs from the constructor. An out-of-range number in a
+            // corrupt or hand-edited file would otherwise throw before the tray icon
+            // is ever created, so the app would appear not to start at all.
+            DateTimeOffset exported;
+            try
+            {
+                exported = DateTimeOffset.FromUnixTimeSeconds(epoch);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return "the recorded export date is unreadable";
+            }
+
+            var age = now - exported;
+
+            // 90 days is Core/Sync.lua's MAX_AGE: past it no client in the guild will
+            // accept this roster from a peer, so guild-wide sharing stops dead.
+            if (age > TimeSpan.FromDays(90))
+            {
+                return $"roster is {(int)age.TotalDays} days old and too old to share";
+            }
+
+            // Matches the addon's own staleDays default, so the tray and the login
+            // line agree about what counts as stale.
+            if (age > TimeSpan.FromDays(14))
+            {
+                return $"roster is {(int)age.TotalDays} days old";
+            }
+        }
+
+        return null;
     }
 
     private void SetIcon(TrayState state, string tooltip)
@@ -221,6 +298,67 @@ public sealed class TrayContext : ApplicationContext
         }
     }
 
+    /// <summary>
+    /// Opens the loopback data console in the default browser.
+    /// <para>
+    /// The URL carries the session token, which is why it goes straight to the
+    /// browser rather than being shown anywhere for copying: a token in a chat
+    /// window or a screenshot is a token somebody else can use, and this console can
+    /// spend the user's Blizzard quota and install a roster the whole guild adopts.
+    /// </para>
+    /// </summary>
+    internal void OpenConsole()
+    {
+        string url;
+
+        try
+        {
+            lock (_consoleGate)
+            {
+                if (_console is null)
+                {
+                    _pulls = new PullService(_store);
+
+                    var api = new ConsoleApi(
+                        _store,
+                        _pulls,
+                        DpapiSecretProtector.Default,
+                        () => _poll.CheckNowAsync(force: true));
+
+                    _console = new ConsoleServer(api);
+                    _console.Start();
+                }
+
+                url = _console.Url;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("could not start the data console", ex);
+            MessageBox.Show(
+                $"Could not start the data console: {ex.Message}",
+                "RoS-Tools Sidecar",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log.Error("could not open the browser", ex);
+            MessageBox.Show(
+                "The console is running but the browser would not open. " +
+                $"Open it from the sidecar log: {Log.Directory}",
+                "RoS-Tools Sidecar",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+    }
+
     private void ShowSettings()
     {
         if (_settingsForm is { IsDisposed: false })
@@ -234,7 +372,7 @@ public sealed class TrayContext : ApplicationContext
             return;
         }
 
-        _settingsForm = new SettingsForm(_store, () => _poll.CheckNowAsync(force: true));
+        _settingsForm = new SettingsForm(_store, () => _poll.CheckNowAsync(force: true), OpenConsole);
         _settingsForm.FormClosed += (_, _) =>
         {
             _settingsForm = null;
@@ -309,6 +447,8 @@ public sealed class TrayContext : ApplicationContext
             _poll.CheckStarted -= OnCheckStarted;
             _poll.CheckCompleted -= OnCheckCompleted;
             _poll.DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+            _console?.DisposeAsync().AsTask().GetAwaiter().GetResult();
 
             _icon.Visible = false;
             _icon.Dispose();

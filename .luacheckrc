@@ -34,8 +34,9 @@ read_globals = {
   "UnitName", "UnitExists", "UnitIsPlayer", "GetRealmName",
   "GetPlayerInfoByGUID", "GetAverageItemLevel",
   "C_AddOns", "Enum", "TooltipDataProcessor",
-  -- Addon comm (Core/Comm.lua)
+  -- Addon comm (Core/Comm.lua, Core/Sync.lua)
   "C_ChatInfo", "C_Timer", "IsInGuild", "GetTime",
+  "C_GuildInfo", "GetNumGuildMembers", "GetGuildRosterInfo",
   -- Widget templates / helpers
   "FauxScrollFrame_GetOffset", "FauxScrollFrame_Update",
   "FauxScrollFrame_OnVerticalScroll", "FauxScrollFrame_SetOffset",

@@ -3,8 +3,8 @@
     Copies this checkout's addon source into the installed WoW AddOns folder.
 
 .DESCRIPTION
-    Dev-loop deploy, not the end-user updater (that's Tools\Update-RoSTools.ps1,
-    which only refreshes Data\GuildData.lua). This script ships Core\, Modules\,
+    Dev-loop deploy. Not for end users -- guildmates install from CurseForge and
+    get roster updates in-game from their peers. This script ships Core\, Modules\,
     Data\, and RoS-Tools.toc -- the same payload CI zips, excluding Tools,
     .git*, and *.md -- into <WoW>\_retail_\Interface\AddOns\RoS-Tools.
 

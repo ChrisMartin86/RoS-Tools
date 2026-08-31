@@ -75,6 +75,21 @@ public sealed class SettingsStore
         }
     }
 
+    /// <summary>
+    /// A private copy taken under the lock. Cloning <see cref="Current"/> directly
+    /// races <see cref="Update"/>, which holds the lock across the whole mutation:
+    /// a caller could otherwise observe a half-applied save - the new addon folder
+    /// paired with the old data URL - or throw enumerating the destination
+    /// dictionary mid-write.
+    /// </summary>
+    public SidecarSettings Snapshot()
+    {
+        lock (_gate)
+        {
+            return Current.Clone();
+        }
+    }
+
     /// <summary>Mutate and persist in one step.</summary>
     public void Update(Action<SidecarSettings> mutate)
     {

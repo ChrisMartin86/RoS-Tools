@@ -137,18 +137,78 @@ register("set", "<option> [on|off]", "Toggle or set an option", function(args)
     return
   end
 
-  local newValue
+  local newValue, err
   if value == "" then
-    newValue = ns.SetOption(key)
+    newValue, err = ns.SetOption(key)
   elseif value == "on" or value == "true" or value == "1" then
-    newValue = ns.SetOption(key, true)
+    newValue, err = ns.SetOption(key, true)
   elseif value == "off" or value == "false" or value == "0" then
-    newValue = ns.SetOption(key, false)
+    newValue, err = ns.SetOption(key, false)
   else
-    newValue = ns.SetOption(key, tonumber(value) or value)
+    newValue, err = ns.SetOption(key, tonumber(value) or value)
+  end
+
+  if newValue == nil then
+    ns.Error(("%s: %s"):format(key, err or "could not set"))
+    return
   end
 
   ns.Print(("%s = %s"):format(key, tostring(newValue)))
+end)
+
+register("sync", "[now|forget]", "Roster snapshot sync status and controls", function(args)
+  args = (args or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+
+  if args == "now" then
+    if not ns.Sync then
+      ns.Error("sync is unavailable")
+      return
+    end
+    ns.Sync:ForceSync()
+    ns.Print("announcing and looking for a newer roster...")
+    return
+  end
+
+  if args == "forget" then
+    if ns.Data:ForgetSnapshot() then
+      ns.Print(("dropped the adopted snapshot -- back to the shipped export, %s entries"):format(
+        ns.Colorize("value", ns.Data:Count())))
+    else
+      ns.Print("no adopted snapshot to drop")
+    end
+    return
+  end
+
+  local kind, info = ns.Data:SourceInfo()
+  local age = ns.Data:AgeInDays()
+  ns.Print(("source: %s -- %s entries, exported %s%s"):format(
+    ns.Colorize("value", kind == "sync" and "guildmate" or "shipped file"),
+    ns.Colorize("value", ns.Data:Count()),
+    ns.Data:GeneratedAt() or "?",
+    age and (" (%d day%s ago)"):format(age, age == 1 and "" or "s") or ""))
+
+  if kind == "sync" and info.from then
+    ns.Print(ns.Colorize("dim", ("received from %s%s"):format(
+      info.from,
+      info.receivedAt and (" on " .. date("%Y-%m-%d %H:%M", info.receivedAt)) or "")))
+  end
+
+  if not ns.db.syncEnabled then
+    ns.Warn("syncEnabled is off -- this client neither sends nor receives")
+    return
+  end
+
+  local status = ns.Sync and ns.Sync:Status()
+  if status then
+    if status.pending then
+      ns.Print(ns.Colorize("dim", "waiting on a snapshot from " .. status.pending))
+    elseif status.serving then
+      ns.Print(ns.Colorize("dim", "currently serving " .. status.serving))
+    end
+    ns.Print(ns.Colorize("dim", ("%d request%s made, %d dump%s served this session"):format(
+      status.attempts, status.attempts == 1 and "" or "s",
+      status.serveCount, status.serveCount == 1 and "" or "s")))
+  end
 end)
 
 register("reload", "", "Rebuild the lookup table from Data/GuildData.lua", function()

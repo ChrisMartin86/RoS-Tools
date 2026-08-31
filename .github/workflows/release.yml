@@ -132,6 +132,7 @@ jobs:
             --exclude 'build' \
             --exclude 'Tools' \
             --exclude 'scripts' \
+            --exclude 'Sidecar' \
             --exclude '*.md' \
             --exclude 'changelog.md' \
             --exclude 'fresh-guild-data.lua' \

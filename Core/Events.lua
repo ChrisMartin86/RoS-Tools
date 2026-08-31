@@ -1,7 +1,7 @@
 -- RoS-Tools/Core/Events.lua
 -- Single event frame. Modules hook in via the registry in Init.lua.
--- Core/Comm.lua is wired in directly here (not via the module registry) --
--- see the comment at the top of Comm.lua for why.
+-- Core/Comm.lua and Core/Sync.lua are wired in directly here (not via the
+-- module registry) -- see the comment at the top of Comm.lua for why.
 
 local ADDON_NAME, ns = ...
 
@@ -18,14 +18,18 @@ frame:RegisterEvent("PLAYER_REGEN_ENABLED")
 --- Calls a Comm.lua entry point the same way Init.lua's module dispatch()
 --- calls module methods: pcall-wrapped, so a bug in Comm.lua degrades to
 --- "no live updates" instead of breaking the rest of the event handler.
-local function callComm(method, ...)
-  local fn = ns.Comm and ns.Comm[method]
+local function call(what, method, ...)
+  local target = ns[what]
+  local fn = target and target[method]
   if type(fn) ~= "function" then return end
-  local ok, err = pcall(fn, ns.Comm, ...)
+  local ok, err = pcall(fn, target, ...)
   if not ok then
-    ns.Error(("Comm:%s() failed: %s"):format(method, tostring(err)))
+    ns.Error(("%s:%s() failed: %s"):format(what, method, tostring(err)))
   end
 end
+
+local function callComm(method, ...) call("Comm", method, ...) end
+local function callSync(method, ...) call("Sync", method, ...) end
 
 frame:SetScript("OnEvent", function(_, event, ...)
   if event == "ADDON_LOADED" then
@@ -34,6 +38,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
     ns.LoadConfig()
     ns.Data:Build()
     callComm("OnInitialize")
+    callSync("OnInitialize")
     ns:InitializeModules()
     frame:UnregisterEvent("ADDON_LOADED")
 
@@ -41,6 +46,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
     ns.playerRealmSlug = ns.Util.RealmToSlug(GetRealmName() or "")
     ns.playerName      = UnitName("player")
     callComm("OnEnable")
+    callSync("OnEnable")
     ns:EnableModules()
 
     local count = ns.Data:Count()
@@ -62,7 +68,10 @@ frame:SetScript("OnEvent", function(_, event, ...)
     ns.inCombat = false
 
   elseif event == "CHAT_MSG_ADDON" then
+    -- Both handlers see every message; each ignores prefixes that aren't
+    -- its own. Comm.lua owns RoSTools1, Sync.lua owns RoSToolsD1.
     callComm("HandleAddonMessage", ...)
+    callSync("HandleAddonMessage", ...)
 
   elseif event == "PLAYER_EQUIPMENT_CHANGED" then
     callComm("HandleEquipmentChanged")

@@ -1,10 +1,10 @@
 namespace RoSTools.Sidecar.Core;
 
 /// <summary>
-/// Where the sidecar keeps its own state. Deliberately the same
-/// <c>%LOCALAPPDATA%\RoS-Tools</c> folder that <c>Tools\Update-RoSTools.ps1</c>
-/// uses, but a different file name - the script owns <c>updater-state.json</c>
-/// and the two cache ETags for what may be different destinations.
+/// Where the sidecar keeps its own state: <c>%LOCALAPPDATA%\RoS-Tools</c>. The
+/// retired PowerShell updater used the same folder with <c>updater-state.json</c>;
+/// the file name here stays distinct so a leftover from that era is never read as
+/// sidecar state.
 /// </summary>
 public static class Paths
 {

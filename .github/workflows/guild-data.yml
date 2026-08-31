@@ -156,8 +156,8 @@ jobs:
           requests against this branch -- it is overwritten by automation and
           holds no source code.
 
-          `GuildData.lua` is consumed by `Tools/Update-RoSTools.ps1` on the
-          default branch.
+          `GuildData.lua` is consumed by the RoS-Tools Sidecar, and by the
+          CurseForge release workflow on the default branch.
           EOF
 
           git -C publish add "$DATA_FILE" README.md

@@ -28,9 +28,15 @@ Three languages, cleanly split:
   the lifecycle and assumes every module has already registered.
 - **`Data/GuildData.lua` is generated. Never hand-edit it.** Regenerate via the
   exporter. It is committed to the repo on purpose — it *is* the payload.
-- **SavedVariables (`RoSToolsDB`) hold settings only.** The ilvl table is rebuilt
-  from the static file on every `ADDON_LOADED`. Don't persist data there; 2.0
-  removed exactly that anti-pattern.
+- **SavedVariables (`RoSToolsDB`) hold settings, plus at most one adopted roster
+  snapshot (`syncedData`).** The ilvl table is rebuilt on every `ADDON_LOADED`
+  from whichever source has the newer `generated_epoch` — the shipped
+  `Data/GuildData.lua`, or a snapshot received from a guildmate over addon comm
+  (`Core/Sync.lua`). `syncedData` is cleared automatically as soon as the
+  shipped file is newer. Nothing else is persisted: no scraped values, no
+  live-overlay data, no derived tables. 2.0 removed *unversioned* persisted
+  data and that stays removed — anything stored here must carry an epoch and a
+  self-invalidation rule.
 
 ## Architecture
 
@@ -43,6 +49,8 @@ Core/Init.lua    ns.COLOR, ns.Print/Warn/Error/Debug, module registry
 Core/Util.lua    RealmToSlug, MakeKey, NormalizeKey, DaysSince
 Core/Config.lua  DEFAULTS, ILVL_COLORS, LoadConfig, SetOption
 Core/Data.lua    ns.Data — Build() + read-only query API
+Core/Comm.lua    live per-player ilvl over the GUILD addon channel
+Core/Sync.lua    whole-roster snapshot sync between guildmates
 Core/Events.lua  the one event frame; drives the lifecycle
 Modules/*.lua    Tooltip, Roster, Browser, Commands
 ```
@@ -107,8 +115,16 @@ logs the failing key.
 luacheck .
 ```
 
-That is the only automated check; there is no Lua test suite. CI runs the same
-lint and then packages a zip excluding `.git*`, `build`, `Tools`, and `*.md`.
+```powershell
+lua5.1 Tools/sync-harness.lua
+dotnet test .\Sidecar\RoSTools.Sidecar.sln
+```
+
+`luacheck` is the only lint; there is no Lua unit-test framework, but
+`Tools/sync-harness.lua` runs the real `Core/*.lua` against a stubbed WoW API and
+must pass before any change to `Core/Sync.lua` is considered done. CI runs
+luacheck and packages a zip excluding `.git*`, `build`, `Tools`, `scripts`,
+`Sidecar` and `*.md`.
 
 Behavioral changes must be verified in-game. Copy the folder to
 `World of Warcraft\_retail_\Interface\AddOns\RoS-Tools` (the `.toc` sits directly
@@ -128,56 +144,114 @@ never commit them, and never add a secret to the addon side. 2.0 deleted an
 embedded cipher plus a plaintext `ROSTOOLS_SECRET` that protected nothing; don't
 bring that pattern back.
 
-## Distribution scripts
+## Distribution — who gets what, and how
 
-`scripts/Install-RoSTools.ps1` and `scripts/Update-RoSToolsData.ps1` are handed
-out as `irm … | iex` one-liners and must run on **Windows PowerShell 5.1** as
-well as 7. That imposes four rules, all easy to break by accident:
+Three audiences, and confusing them is how this project went wrong once already.
+
+**General guildmates.** CurseForge, and nothing else. They install the addon and
+never run a script, never install a background app, never supply a credential.
+Their roster stays current because `Core/Sync.lua` adopts a newer snapshot from
+whichever guildmate has one. `.github/workflows/release.yml` swaps in the freshest
+`guild-data` export at package time, so a brand-new install starts from something
+recent rather than from whatever was last committed to `main`.
+
+**Maintainers — Chris and the guild leader, one or two machines total.** The
+`Sidecar/` tray app. It exists to *seed* the peer sync: at least one client has to
+be holding the fresh file for the rest to have something to pull. Handing it out
+guild-wide is pointless and is explicitly not the plan.
+
+**Developers.** `Tools/` (the Python exporter, the comparer, `sync-harness.lua`),
+`scripts/Deploy-RoSTools.ps1` (dev-loop copy from a checkout) and
+`scripts/Install-Dev.ps1` (one-liner install of any ref straight from GitHub, for
+testing a branch on a machine with no checkout). Both directories are
+rsync-excluded from the CurseForge zip and are never handed to a guildmate.
+
+### What went away on 2026-08-29, and what did not
+
+Deleted: `scripts/Install-RoSTools.ps1`, `scripts/Update-RoSToolsData.ps1`,
+`Tools/Update-RoSTools.ps1`, `Tools/Play-RoSTools.cmd`. They predated
+`Core/Sync.lua` and solved a problem the addon now solves for itself, at the cost
+of four hand-synchronised copies of the GuildData validator and a general-user
+install path served raw from `main` with no release gate in front of it.
+
+`scripts/Install-Dev.ps1` was added the same day and is **not** a walk-back of
+that. The difference that matters is audience: it is a debugging tool, it is
+documented only under Development, and it deliberately **does not touch the
+`guild-data` branch**. It installs whatever `Data/GuildData.lua` the ref carries,
+so there is still no second copy of the validator anywhere.
+
+**`GuildDataValidator.cs` in `Sidecar/` is the only copy of the validation rules
+outside the addon.** Keep it that way. Any new script that wants to install
+roster data — as opposed to addon source — is reintroducing the problem, and the
+question to ask first is what it does that CurseForge plus peer sync does not.
+The answer has to be about *seeding* data, which is the sidecar's job.
+
+### Rules for anything piped into `iex`
+
+`scripts/Install-Dev.ps1` is the only such script left, and it must keep running
+on **Windows PowerShell 5.1** as well as 7:
 
 - **No `param()` block and no `$PSScriptRoot`.** Piping into `iex` supplies
-  neither. Every knob is an environment variable (`ROSTOOLS_ADDONS_PATH`,
-  `ROSTOOLS_ADDON_PATH`, `ROSTOOLS_BRANCH`); add new ones the same way.
+  neither. Every knob is an environment variable (`ROSTOOLS_REF`,
+  `ROSTOOLS_ADDONS_PATH`, `ROSTOOLS_KEEP_DATA`); add new ones the same way.
 - **The whole body lives inside `& { … }`.** `iex` executes in the *caller's*
   scope, so an unwrapped script would leave `Set-StrictMode`,
   `$ErrorActionPreference = 'Stop'` and every helper function behind in the
-  guildmate's console. Keep new code inside the block and use plain locals —
-  `$script:` would leak for the same reason.
-- **5.1 compatibility.** `Invoke-WebRequest` always needs `-UseBasicParsing`;
-  TLS 1.2 is set explicitly because 5.1 can still negotiate 1.0. Document the
-  one-liner as `irm`, never `iwr` — on 5.1 `iwr` routes through the IE parsing
-  engine, which Windows 11 does not ship.
-- **Self-contained.** They must not dot-source anything from the repo, so the
-  `Test-GuildData` validator is duplicated from `Tools/Update-RoSTools.ps1` on
-  purpose. A fourth copy now lives in `Sidecar/` as
-  `GuildDataValidator.cs`. Fix a validation bug in **all four** places.
+  console it was pasted into. Use plain locals — `$script:` leaks for the same
+  reason.
+- **Self-contained.** It must not dot-source anything from the repo.
+- **5.1 compatibility.** TLS 1.2 explicitly; `-UseBasicParsing` on every
+  `Invoke-WebRequest`. Document the one-liner as `irm`, never `iwr` — on 5.1
+  `iwr` routes through the IE parsing engine, which Windows 11 does not ship.
+- **Extract with `[System.IO.Compression.ZipFile]`, not `Expand-Archive`.** Both
+  exist on 5.1, but `Expand-Archive` is markedly slower there and lives in an
+  optional module whose absence reports as an unrecognised-command error. The
+  assembly needs an `Add-Type -AssemblyName System.IO.Compression.FileSystem` on
+  5.1 and must *not* get one on 7 — guard it with `-as [type]`.
+- **Never `Join-Path` a path whose drive may not exist.** `Join-Path` resolves the
+  drive qualifier through the provider and throws *"Cannot find drive"* for an
+  unmounted letter; with `$ErrorActionPreference = 'Stop'` that ends the run
+  instead of moving to the next candidate. Concatenate strings when probing
+  speculative locations, and pass `-ErrorAction SilentlyContinue` to `Test-Path`.
+  This is a real bug that was caught in testing, not a hypothetical.
 
-Lint them with PSScriptAnalyzer before pushing; `PSAvoidUsingWriteHost` is
-expected and ignored, since these are console-facing by design.
+Lint with PSScriptAnalyzer before pushing; `PSAvoidUsingWriteHost` is expected and
+ignored, since it is console-facing by design. Everything else should be clean.
 
 ```powershell
-Invoke-ScriptAnalyzer -Path .\scripts -Settings @{
-    Rules = @{
-        PSUseCompatibleSyntax  = @{ Enable = $true; TargetVersions = @('5.1', '7.0') }
-        PSUseCompatibleCmdlets = @{ Enable = $true; compatibility = @('desktop-5.1.14393.206-windows') }
+$analyze = @{
+    Path     = '.\scripts'
+    Settings = @{
+        Rules = @{
+            PSUseCompatibleSyntax  = @{ Enable = $true; TargetVersions = @('5.1', '7.0') }
+            PSUseCompatibleCmdlets = @{ Enable = $true; compatibility = @('desktop-5.1.14393.206-windows') }
+        }
     }
 }
+Invoke-ScriptAnalyzer @analyze
 ```
 
-They are served raw from `main`, so a bad push to those two files breaks
-installs immediately — there is no release gate in front of them.
-`scripts/Deploy-RoSTools.ps1` is unrelated: local dev-loop copy, never handed out.
+It is served raw from `main`, so a bad push to it breaks your own next install
+immediately — there is no release gate in front of it. That is acceptable for a
+debugging tool and would not be for a guildmate-facing one.
+
+If a script ever seems necessary again, ask what it does that CurseForge plus
+peer sync does not — the answer has to be about *seeding* data, which is the
+sidecar's job.
 
 ## The sidecar
 
 `Sidecar/` is a Windows tray app (.NET 10 LTS, WinForms) that polls the
-`guild-data` branch and writes `Data/GuildData.lua` into the installed addon —
-`Tools/Update-RoSTools.ps1` in Download mode, made resident. The addon is
-unchanged by it and knows nothing about it.
+`guild-data` branch and writes `Data/GuildData.lua` into the installed addon. It
+runs on the maintainer's machine and the guild leader's — not on a guildmate's.
+The addon is unchanged by it and knows nothing about it.
 
-- **It must never call the Blizzard API.** That would put the client secret on
-  every guildmate's machine and multiply a ~180-call export by the number of
-  installs. CI is the single API consumer; the sidecar only reads what CI
-  publishes. Same rule as the addon: no secret on the user side, ever.
+- **The poller must never call the Blizzard API.** `PollService` /
+  `UpdateService` read the `guild-data` branch and nothing else, so CI stays the
+  guild's single *scheduled* API consumer and call volume does not grow with
+  installs. The data console's manual pull is the one deliberate exception, on a
+  human click, with credentials that person supplied. Never wire `PullService`
+  into the poller.
 - **It must never touch the WoW process.** No memory access, no injection, no
   input automation, no enumerating `Wow.exe`. It opens exactly three paths under
   `_retail_`: `Data\GuildData.lua`, its `.bak`, and nothing else. That line is

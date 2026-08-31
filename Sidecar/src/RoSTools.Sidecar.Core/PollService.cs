@@ -67,24 +67,43 @@ public sealed class PollService : IAsyncDisposable
                 await SleepAsync(NextDelay(), token).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            // Shutting down.
+            // Shutting down. Guarded on the token: a cancellation from anywhere else
+            // - the linked sleep source, most plausibly - is a bug in this class, not
+            // a shutdown, and must not be mistaken for one.
         }
         catch (Exception ex)
         {
+            // The loop is the only thing keeping the roster current, so its death has
+            // to reach the tray. Logging alone left a dead sidecar rendering a healthy
+            // icon and an ever-older "updated N days ago" for the life of the process.
             Log.Error("the poll loop stopped unexpectedly", ex);
+
+            var message = $"The sidecar stopped checking for updates: {ex.Message} " +
+                          "Restart it to resume.";
+
+            _store.Update(s => s.LastError = message);
+
+            CheckCompleted?.Invoke(new UpdateResult(
+                UpdateOutcome.Failed, message, 0, null, DateTimeOffset.UtcNow));
         }
     }
 
     private TimeSpan NextDelay()
     {
+        var baseline = TimeSpan.FromHours(_store.Current.EffectivePollHours);
+
         if (_backoff > TimeSpan.Zero)
         {
-            return _backoff;
+            // Never longer than the configured interval, and never shorter than it
+            // either once backoff has run its course. A failure includes a *content*
+            // refusal, not just a transport one, so a bad export upstream used to
+            // move a 6-hourly client to a flat hourly poll - four times the traffic,
+            // with no jitter, so every failing client in the guild converged on the
+            // same minute. Backing off should never poll more often than success.
+            baseline = _backoff < baseline ? _backoff : baseline;
         }
-
-        var baseline = TimeSpan.FromHours(_store.Current.EffectivePollHours);
 
         // +/-10%, so installs spread out instead of stampeding on the hour.
         var spread = 1.0 + ((_jitter.NextDouble() - 0.5) / 5.0);

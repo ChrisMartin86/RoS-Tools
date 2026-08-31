@@ -8,6 +8,15 @@ public enum TrayState
 {
     Idle,
     Checking,
+
+    /// <summary>
+    /// Working, but something needs attention - checks have stopped happening, or
+    /// the installed roster is aging. Shares the error artwork deliberately: with
+    /// notifications off, "looks normal" is indistinguishable from "is fine", and
+    /// the whole point of this state is to break that tie.
+    /// </summary>
+    Warning,
+
     Error,
 }
 
@@ -27,7 +36,7 @@ public static class TrayIcons
     public static Icon For(TrayState state) => state switch
     {
         TrayState.Checking => CheckingIcon.Value,
-        TrayState.Error => ErrorIcon.Value,
+        TrayState.Warning or TrayState.Error => ErrorIcon.Value,
         _ => IdleIcon.Value,
     };
 

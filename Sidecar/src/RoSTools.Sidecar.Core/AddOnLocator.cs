@@ -4,10 +4,10 @@ using Microsoft.Win32;
 namespace RoSTools.Sidecar.Core;
 
 /// <summary>
-/// Finds the installed addon folder. A port of <c>Find-WowRoot</c> and
-/// <c>Resolve-AddOnPath</c> from <c>Tools\Update-RoSTools.ps1</c>: the uninstall
-/// registry first, because that survives non-default install locations, then the
-/// usual suspects on every fixed drive.
+/// Finds the installed addon folder: the uninstall registry first, because that
+/// survives non-default install locations, then the usual suspects on every fixed
+/// drive. (Originally a port of <c>Find-WowRoot</c> / <c>Resolve-AddOnPath</c>
+/// from the PowerShell updater that was retired on 2026-08-29.)
 /// <para>
 /// This type reads the registry and enumerates directories. It must never open,
 /// inspect or enumerate the WoW process itself - that is the line between a file

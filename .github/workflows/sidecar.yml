@@ -1,0 +1,137 @@
+# Builds and tests the desktop sidecar, and cuts its releases.
+#
+# The sidecar versions independently of the addon: this workflow releases on a
+# `sidecar-vX.Y.Z` tag, while `## Version:` in RoS-Tools.toc stays the addon's
+# source of truth. Don't couple them.
+#
+# Everything except the publish runs on ubuntu-latest. That is why the solution
+# is split the way it is: RoSTools.Sidecar.Core targets plain net10.0 and holds
+# all the logic, RoSTools.Sidecar targets net10.0-windows and is only the
+# WinForms shell. Keep testable code out of the shell or it stops being covered.
+
+name: Sidecar
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Sidecar/**'
+      - '.github/workflows/sidecar.yml'
+    tags:
+      - 'sidecar-v*'
+  pull_request:
+    paths:
+      - 'Sidecar/**'
+      - '.github/workflows/sidecar.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore Sidecar/RoSTools.Sidecar.sln
+
+      # Directory.Build.props sets EnableWindowsTargeting, so the WinForms
+      # project compiles here too even though it never runs here.
+      - name: Build
+        run: dotnet build Sidecar/RoSTools.Sidecar.sln --configuration Release --no-restore
+
+      - name: Test
+        run: >-
+          dotnet test Sidecar/RoSTools.Sidecar.sln
+          --configuration Release
+          --no-build
+          --verbosity normal
+
+  publish:
+    name: Publish and release
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/sidecar-v')
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Read the version from the tag
+        id: version
+        shell: bash
+        run: echo "value=${GITHUB_REF_NAME#sidecar-v}" >> "$GITHUB_OUTPUT"
+
+      # Self-contained and single-file so a guildmate needs no .NET runtime.
+      # Trimming stays OFF: it breaks WinForms reflection, and a tray app that
+      # throws on first paint is worse than a 50 MB download.
+      - name: Publish
+        run: >-
+          dotnet publish Sidecar/src/RoSTools.Sidecar/RoSTools.Sidecar.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:PublishTrimmed=false
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:Version=${{ steps.version.outputs.value }}
+          --output publish
+
+      # Unsigned for now, so SmartScreen will warn on first run. To sign, add
+      # the secrets and uncomment: it has to sit between publish and release, or
+      # the release attaches the unsigned binary.
+      #
+      # - name: Sign
+      #   uses: azure/trusted-signing-action@v0
+      #   with:
+      #     azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      #     azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      #     azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+      #     endpoint: ${{ vars.TRUSTED_SIGNING_ENDPOINT }}
+      #     trusted-signing-account-name: ${{ vars.TRUSTED_SIGNING_ACCOUNT }}
+      #     certificate-profile-name: ${{ vars.TRUSTED_SIGNING_PROFILE }}
+      #     files-folder: publish
+      #     files-folder-filter: exe
+
+      - name: Name the artifact
+        id: artifact
+        shell: bash
+        run: |
+          name="RoSToolsSidecar-${{ steps.version.outputs.value }}-win-x64.exe"
+          mv publish/RoSToolsSidecar.exe "publish/$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "path=publish/$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-${{ steps.version.outputs.value }}
+          path: ${{ steps.artifact.outputs.path }}
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.artifact.outputs.path }}
+          name: Sidecar ${{ steps.version.outputs.value }}
+          body: |
+            Desktop sidecar ${{ steps.version.outputs.value }} for Windows (x64).
+
+            Keeps `Data/GuildData.lua` current in the background. No .NET runtime
+            needed. Unsigned, so SmartScreen will ask on first run.
+          draft: false
+          prerelease: false

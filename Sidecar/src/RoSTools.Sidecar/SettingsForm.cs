@@ -14,8 +14,16 @@ public sealed class SettingsForm : Form
 {
     private readonly SettingsStore _store;
     private readonly Func<Task<UpdateResult>> _checkNow;
+    private readonly Action? _openConsole;
 
     private readonly TextBox _addOnPath = new();
+
+    /// <summary>
+    /// What auto-detect put in the path box, when the setting was empty. Non-null
+    /// only while the box still shows exactly that, so Save can leave the setting on
+    /// auto-detect instead of pinning it.
+    /// </summary>
+    private string? _autoDetected;
     private readonly Label _addOnStatus = new();
     private readonly NumericUpDown _interval = new();
     private readonly CheckBox _autoStart = new();
@@ -23,10 +31,11 @@ public sealed class SettingsForm : Form
     private readonly Label _lastResult = new();
     private readonly Button _checkButton = new();
 
-    public SettingsForm(SettingsStore store, Func<Task<UpdateResult>> checkNow)
+    public SettingsForm(SettingsStore store, Func<Task<UpdateResult>> checkNow, Action? openConsole = null)
     {
         _store = store;
         _checkNow = checkNow;
+        _openConsole = openConsole;
 
         Text = "RoS-Tools Sidecar";
         Icon = TrayIcons.For(TrayState.Idle);
@@ -35,7 +44,7 @@ public sealed class SettingsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         AutoScaleMode = AutoScaleMode.Font;
-        ClientSize = new Size(560, 440);
+        ClientSize = new Size(640, 440);
         Padding = new Padding(14);
 
         BuildLayout();
@@ -204,6 +213,13 @@ public sealed class SettingsForm : Form
         row.Controls.Add(_checkButton);
         row.Controls.Add(logs);
 
+        if (_openConsole is not null)
+        {
+            var console = new Button { Text = "Data console", Width = 110 };
+            console.Click += (_, _) => _openConsole();
+            row.Controls.Add(console);
+        }
+
         CancelButton = close;
         return row;
     }
@@ -213,7 +229,15 @@ public sealed class SettingsForm : Form
     {
         var settings = _store.Current;
 
-        _addOnPath.Text = settings.AddOnPath ?? AddOnLocator.FindAddOnFolder() ?? string.Empty;
+        // Remember whether the box is showing a real setting or just what auto-detect
+        // found, so Save can tell the difference. Writing the pre-filled value back
+        // as an explicit AddOnPath turned a self-correcting setting into a pinned one
+        // for anyone who opened this window to change something else entirely - and
+        // "Check now" saves first, so it took one click. They would only find out
+        // after moving their WoW install, when every check failed against a folder
+        // they never chose.
+        _autoDetected = settings.AddOnPath is null ? AddOnLocator.FindAddOnFolder() : null;
+        _addOnPath.Text = settings.AddOnPath ?? _autoDetected ?? string.Empty;
         _interval.Value = settings.EffectivePollHours;
         _dataUrl.Text = settings.DataUrl;
         _autoStart.Checked = AutoStart.IsEnabled();
@@ -295,21 +319,26 @@ public sealed class SettingsForm : Form
             return false;
         }
 
-        var urlChanged = !string.Equals(url, _store.Current.DataUrl, StringComparison.Ordinal);
+        // An untouched auto-detected value stays auto-detected.
+        var stillAutoDetected =
+            _autoDetected is not null &&
+            string.Equals(path, _autoDetected, StringComparison.OrdinalIgnoreCase);
 
         _store.Update(s =>
         {
-            s.AddOnPath = path.Length == 0 ? null : path;
+            // Explicitly rooted. A relative path here would make the destination
+            // follow whatever directory the process happened to start in.
+            s.AddOnPath = path.Length == 0 || stillAutoDetected ? null : Path.GetFullPath(path);
             s.DataUrl = url;
             s.PollIntervalHours = (int)_interval.Value;
             s.StartWithWindows = _autoStart.Checked;
 
-            if (urlChanged)
-            {
-                // A cached ETag from a different URL would suppress the first fetch.
-                s.ETag = null;
-                s.LastModified = null;
-            }
+            // No ETag invalidation needed here any more. The cache is keyed by
+            // destination and carries the URL it came from plus the generated_epoch
+            // of the file actually installed there, so changing either the folder or
+            // the URL simply misses the cache. That is the fix for the older bug
+            // where a cached ETag from one addon folder answered a second one with a
+            // 304 and "Already up to date" over stale data.
         });
 
         AutoStart.Set(_autoStart.Checked);

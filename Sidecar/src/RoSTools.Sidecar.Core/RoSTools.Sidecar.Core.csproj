@@ -12,4 +12,12 @@
     <AssemblyName>RoSTools.Sidecar.Core</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RoSTools.Sidecar.Tests" />
+  </ItemGroup>
+
 </Project>

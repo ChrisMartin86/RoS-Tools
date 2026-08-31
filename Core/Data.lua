@@ -12,12 +12,82 @@ local meta    = {}
 local count   = 0
 local built   = false
 
+-- Forward declaration: the query helpers defined alongside Build() below
+-- call this before it is defined further down.
+local ensureBuilt
+
 -- Live overlay, fed by Core/Comm.lua over the addon-message channel.
 -- In-memory only, session-scoped -- gone on /reload, never written to
 -- RoSToolsDB or any file. Mirrors ilvls/lowered so lookups can treat it
 -- the same way.
 local liveOverlay       = {}   -- ["Name-realm-slug"] = ilvl
 local liveOverlayLowered = {}  -- lowercased key -> canonical key
+
+-- Keys that came from the pre-2.0 flat globals rather than from a real
+-- export. Tracked so Data:Export() can leave them out: they are local
+-- archaeology, and sharing them would push members who left years ago onto
+-- every client in the guild -- or, if they are realm-less pre-2.0 keys,
+-- fail enough of the receiver's per-entry validation to make it reject the
+-- whole snapshot.
+local legacyKeys = {}
+
+-- Which source Build() last chose: "file" (the shipped Data/GuildData.lua)
+-- or "sync" (a snapshot adopted from a guildmate via Core/Sync.lua).
+local sourceKind = "file"
+local sourceInfo = {}
+
+-- ------------------------------------------------------------------
+-- Source selection
+--
+-- The shipped export and an adopted snapshot are both complete statements
+-- of the roster at an instant, and generated_epoch orders them. The higher
+-- epoch wins outright -- there is no entry-by-entry merge, because a newer
+-- export is authoritative about *absence* too. Merging would resurrect
+-- every departed member forever.
+-- ------------------------------------------------------------------
+
+--- The roster this client is expected to carry, from the shipped export's
+--- meta. A snapshot claiming a different guild is discarded, never merged.
+function Data:IdentityKey()
+  local m = ns.GuildData and ns.GuildData.meta
+  if type(m) ~= "table" then return nil end
+  if not (m.region and m.realm and m.guild) then return nil end
+  return ("%s/%s/%s"):format(m.region, m.realm, m.guild)
+end
+
+--- Pick the adopted snapshot if it beats the shipped file, and drop every
+--- stored snapshot that doesn't. Keyed by identity so carrying more than
+--- one roster later is additive rather than a SavedVariables migration --
+--- but exactly one entry can ever survive this.
+local function chooseSnapshot(shippedEpoch)
+  local store = ns.db and ns.db.syncedData
+  if type(store) ~= "table" then return nil end
+
+  local id = Data:IdentityKey()
+  -- Unknown identity means "we can't judge", not "throw it away". Without
+  -- this, a Data/GuildData.lua that failed to load -- a syntax error, a
+  -- missing .toc line -- would erase the only copy of an adopted roster on
+  -- the next login, and nothing could put it back.
+  if not id then return nil end
+
+  local keep = nil
+
+  for key, entry in pairs(store) do
+    local ok = key == id
+      and type(entry) == "table"
+      and type(entry.ilvls) == "table"
+      and (tonumber(entry.epoch) or 0) > shippedEpoch
+    if ok then
+      keep = entry
+    else
+      -- The file has caught up, or this is a roster we no longer carry.
+      -- Either way it is dead weight in the SavedVariables file.
+      store[key] = nil
+    end
+  end
+
+  return keep
+end
 
 -- ------------------------------------------------------------------
 -- Build
@@ -26,6 +96,7 @@ function Data:Build()
   wipe(ilvls)
   wipe(lowered)
   wipe(meta)
+  wipe(legacyKeys)
   count = 0
   -- liveOverlay is NOT wiped here. Build() only ever fires once, at
   -- ADDON_LOADED, before Comm.lua has received anything, so this is moot
@@ -33,42 +104,134 @@ function Data:Build()
   -- future "/ros reload"), wiping live data an online guildmate just sent
   -- would be actively wrong.
 
-  local source = ns.GuildData
-  if type(source) == "table" then
-    if type(source.meta) == "table" then
-      for k, v in pairs(source.meta) do meta[k] = v end
-    end
-    if type(source.ilvls) == "table" then
-      for k, v in pairs(source.ilvls) do
-        local n = tonumber(v)
-        if type(k) == "string" and n then
-          ilvls[k] = math.floor(n)
-          lowered[k:lower()] = k
-          count = count + 1
-        end
+  local shipped = ns.GuildData
+  local shippedMeta = (type(shipped) == "table" and type(shipped.meta) == "table")
+                      and shipped.meta or {}
+  local shippedEpoch = tonumber(shippedMeta.generated_epoch) or 0
+
+  local snapshot = chooseSnapshot(shippedEpoch)
+
+  local entries
+  if snapshot then
+    sourceKind = "sync"
+    sourceInfo = snapshot
+    meta.generated_epoch = tonumber(snapshot.epoch)
+    meta.generated_at    = date("%Y-%m-%d %H:%M:%S", tonumber(snapshot.epoch))
+    meta.schema          = tonumber(snapshot.schema)
+    meta.region          = shippedMeta.region
+    meta.realm           = shippedMeta.realm
+    meta.guild           = shippedMeta.guild
+    entries = snapshot.ilvls
+  else
+    sourceKind = "file"
+    sourceInfo = {}
+    for k, v in pairs(shippedMeta) do meta[k] = v end
+    entries = (type(shipped) == "table" and type(shipped.ilvls) == "table")
+              and shipped.ilvls or nil
+  end
+
+  if type(entries) == "table" then
+    for k, v in pairs(entries) do
+      local n = tonumber(v)
+      if type(k) == "string" and n then
+        ilvls[k] = math.floor(n)
+        lowered[k:lower()] = k
+        count = count + 1
       end
     end
   end
 
   -- Backwards compatibility with the pre-2.0 flat globals, in case an
   -- old Riddled_Data.lua is still sitting in the addon folder.
-  if type(RiddledTooltip_DB) == "table" then
+  --
+  -- Only when the shipped file is the source. Backfilling legacy keys into
+  -- an adopted snapshot would resurrect departed members through the back
+  -- door -- the same reason a snapshot replaces rather than merges.
+  if sourceKind == "file" and type(RiddledTooltip_DB) == "table" then
     for k, v in pairs(RiddledTooltip_DB) do
       local n = tonumber(v)
       if type(k) == "string" and n and ilvls[k] == nil then
         ilvls[k] = math.floor(n)
         lowered[k:lower()] = k
+        legacyKeys[k] = true
         count = count + 1
       end
     end
+    -- Only the timestamp, never the identity fields. A legacy meta carrying
+    -- its own region/realm/guild would otherwise win over the shipped
+    -- export's, leaving Meta() describing one guild while IdentityKey()
+    -- (which reads ns.GuildData directly) describes another -- so every
+    -- snapshot this client served would fail the receiver's identity check,
+    -- silently.
     if type(RiddledTooltip_Meta) == "table" and not meta.generated_at then
-      for k, v in pairs(RiddledTooltip_Meta) do meta[k] = v end
+      meta.generated_at    = RiddledTooltip_Meta.generated_at
+      meta.generated_epoch = meta.generated_epoch or RiddledTooltip_Meta.generated_epoch
     end
   end
 
   built = true
-  ns.Debug(("data built: %d entries"):format(count))
+  ns.Debug(("data built: %d entries from %s"):format(count, sourceKind))
   return count
+end
+
+--- Where the current table came from: "file" or "sync", plus the
+--- provenance fields on an adopted snapshot (from, receivedAt).
+function Data:SourceInfo()
+  ensureBuilt()
+  return sourceKind, sourceInfo
+end
+
+--- Store a validated snapshot and rebuild from it. Validation lives in
+--- Core/Sync.lua -- by the time it gets here the payload has already been
+--- parsed, bounds-checked and identity-matched.
+function Data:AdoptSnapshot(snapshot)
+  if type(snapshot) ~= "table" or type(snapshot.ilvls) ~= "table" then return false end
+  local id = self:IdentityKey()
+  if not id or not ns.db then return false end
+
+  if type(ns.db.syncedData) ~= "table" then ns.db.syncedData = {} end
+  ns.db.syncedData[id] = snapshot
+  self:Build()
+
+  -- Build() re-runs the source selection, which drops any snapshot that
+  -- doesn't actually beat the shipped file. Report what happened rather
+  -- than what was attempted.
+  return sourceKind == "sync"
+end
+
+--- Drop any adopted snapshot and fall back to the shipped file.
+function Data:ForgetSnapshot()
+  if not ns.db then return false end
+  local had = type(ns.db.syncedData) == "table" and next(ns.db.syncedData) ~= nil
+  ns.db.syncedData = nil
+  if had then self:Build() end
+  return had
+end
+
+--- Serialize the current authoritative table for Core/Sync.lua.
+---
+--- Deliberately excludes the live overlay. A snapshot is a statement about
+--- one export instant; folding in per-session live values would produce a
+--- payload claiming to be epoch N while containing numbers that were never
+--- in export N, and that lie would then propagate.
+function Data:Export()
+  ensureBuilt()
+  local epoch = tonumber(meta.generated_epoch)
+  if not epoch or count == 0 then return nil end
+
+  local parts = {
+    ("H:%d:%s:%s:%s:%s;"):format(epoch, meta.region or "", meta.realm or "",
+                                 meta.guild or "", tostring(meta.schema or "")),
+  }
+  local n = 0
+  for key, ilvl in pairs(ilvls) do
+    if not legacyKeys[key] then
+      parts[#parts + 1] = ("%s=%d;"):format(key, ilvl)
+      n = n + 1
+    end
+  end
+  if n == 0 then return nil end
+  return table.concat(parts), n
 end
 
 -- ------------------------------------------------------------------
@@ -116,13 +279,18 @@ local function mergedEntries()
   return results
 end
 
-local function ensureBuilt()
+function ensureBuilt()
   if not built then Data:Build() end
 end
 
 -- ------------------------------------------------------------------
 -- Queries
 -- ------------------------------------------------------------------
+--- Size of the built table -- the static/adopted source only, with the live
+--- overlay excluded. That is deliberate and load-bearing: this number is
+--- what Core/Sync.lua announces alongside its epoch, so it has to describe
+--- the same thing Export() would serialize. Stats()/Top()/Find() merge the
+--- overlay in and can therefore report one more than this.
 function Data:Count()
   ensureBuilt()
   return count

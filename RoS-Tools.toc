@@ -16,6 +16,7 @@ Core\Config.lua
 Data\GuildData.lua
 Core\Data.lua
 Core\Comm.lua
+Core\Sync.lua
 
 # Modules
 Modules\Tooltip.lua
