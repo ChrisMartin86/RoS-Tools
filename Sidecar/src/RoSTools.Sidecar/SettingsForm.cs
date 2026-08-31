@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Runtime.Versioning;
 using RoSTools.Sidecar.Core;
 
@@ -40,11 +40,13 @@ public sealed class SettingsForm : Form
         Text = "RoS-Tools Sidecar";
         Icon = TrayIcons.For(TrayState.Idle);
         StartPosition = FormStartPosition.CenterScreen;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox = true;
         MinimizeBox = false;
+        SizeGripStyle = SizeGripStyle.Show;
         AutoScaleMode = AutoScaleMode.Font;
-        ClientSize = new Size(640, 440);
+        ClientSize = new Size(660, 560);
+        MinimumSize = new Size(600, 520);
         Padding = new Padding(14);
 
         BuildLayout();
@@ -81,24 +83,41 @@ public sealed class SettingsForm : Form
         {
             Text = "Addon folder",
             Dock = DockStyle.Top,
-            Height = 104,
-            Padding = new Padding(10),
+            Height = 112,
+            Padding = new Padding(10, 6, 10, 10),
         };
 
-        _addOnPath.SetBounds(12, 26, 400, 23);
-        _addOnPath.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        _addOnPath.Width = 396;
+        // A grid rather than absolute bounds: the window is resizable, and the
+        // Browse button has to stay pinned to the right edge while the path box
+        // takes the slack.
+        var grid = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 2,
+        };
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        _addOnPath.Dock = DockStyle.Top;
+        _addOnPath.Margin = new Padding(2, 4, 6, 4);
         _addOnPath.TextChanged += (_, _) => UpdateAddOnStatus();
 
-        var browse = new Button { Text = "Browse...", Left = 416, Top = 25, Width = 100 };
+        var browse = new Button { Text = "Browse...", Width = 100, Margin = new Padding(0, 3, 2, 4) };
         browse.Click += (_, _) => Browse();
 
-        _addOnStatus.SetBounds(12, 58, 504, 32);
+        _addOnStatus.Dock = DockStyle.Fill;
         _addOnStatus.AutoSize = false;
+        _addOnStatus.Margin = new Padding(2, 4, 2, 0);
 
-        group.Controls.Add(_addOnPath);
-        group.Controls.Add(browse);
-        group.Controls.Add(_addOnStatus);
+        grid.Controls.Add(_addOnPath, 0, 0);
+        grid.Controls.Add(browse, 1, 0);
+        grid.Controls.Add(_addOnStatus, 0, 1);
+        grid.SetColumnSpan(_addOnStatus, 2);
+
+        group.Controls.Add(grid);
         return group;
     }
 
@@ -142,26 +161,35 @@ public sealed class SettingsForm : Form
         {
             Text = "Data source",
             Dock = DockStyle.Top,
-            Height = 92,
-            Padding = new Padding(10),
+            Height = 100,
+            Padding = new Padding(10, 6, 10, 10),
         };
 
-        _dataUrl.SetBounds(12, 26, 504, 23);
-        _dataUrl.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        var grid = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+        };
+        grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        _dataUrl.Dock = DockStyle.Top;
+        _dataUrl.Margin = new Padding(2, 4, 2, 4);
 
         var note = new Label
         {
             Text = "Roster data comes from the Blizzard Community API, exported daily by the "
                  + "RoS-Tools guild-data workflow. The sidecar never contacts Blizzard directly.",
-            Left = 12,
-            Top = 54,
-            Width = 504,
-            Height = 32,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(2, 4, 2, 0),
             ForeColor = SystemColors.GrayText,
         };
 
-        group.Controls.Add(_dataUrl);
-        group.Controls.Add(note);
+        grid.Controls.Add(_dataUrl, 0, 0);
+        grid.Controls.Add(note, 0, 1);
+
+        group.Controls.Add(grid);
         return group;
     }
 

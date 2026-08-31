@@ -733,10 +733,9 @@ end
 
 --- PLAYER_LOGIN. ns.playerName / ns.playerRealmSlug are set by now.
 function Sync:OnEnable()
-  -- Seed from the client's own uptime rather than the wall clock: two
-  -- clients logging in the same second must not draw the same jitter, or
-  -- the suppression and spreading rules have nothing to work with.
-  math.randomseed(math.floor(GetTime() * 1000) % 2147483647)
+  -- No math.randomseed() here: retail's Lua sandbox does not expose it, and
+  -- calling it threw before OnEnable could schedule anything. The client
+  -- seeds its own RNG per session, which is what the jitter needs anyway.
 
   if C_GuildInfo and C_GuildInfo.GuildRoster then
     C_GuildInfo.GuildRoster()  -- so GetNumGuildMembers() is meaningful later

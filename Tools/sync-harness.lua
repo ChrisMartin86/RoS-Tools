@@ -80,7 +80,6 @@ local function newClient(name, epoch, ilvls, opts)
   end
   local mathEnv = {}
   for k, v in pairs(math) do mathEnv[k] = v end
-  mathEnv.randomseed = function() end
   mathEnv.random = function(a, b)
     local r = opts.fixed01 or nextRand()
     if not a then return r end
