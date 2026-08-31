@@ -109,29 +109,45 @@ jobs:
       #     files-folder: publish
       #     files-folder-filter: exe
 
-      - name: Name the artifact
+      # The exe is unsigned, so the checksum is the only thing standing between
+      # scripts/Install-Sidecar.ps1 and a truncated or substituted download. The
+      # sha256sum format is `<hash>  <filename>`; the installer reads the first
+      # 64 hex characters, so keep it in that shape.
+      - name: Name the artifact and checksum it
         id: artifact
         shell: bash
         run: |
           name="RoSToolsSidecar-${{ steps.version.outputs.value }}-win-x64.exe"
           mv publish/RoSToolsSidecar.exe "publish/$name"
+          ( cd publish && sha256sum "$name" > "$name.sha256" )
+          cat "publish/$name.sha256"
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "path=publish/$name" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
           name: sidecar-${{ steps.version.outputs.value }}
-          path: ${{ steps.artifact.outputs.path }}
+          path: |
+            ${{ steps.artifact.outputs.path }}
+            ${{ steps.artifact.outputs.path }}.sha256
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.artifact.outputs.path }}
+          files: |
+            ${{ steps.artifact.outputs.path }}
+            ${{ steps.artifact.outputs.path }}.sha256
           name: Sidecar ${{ steps.version.outputs.value }}
           body: |
             Desktop sidecar ${{ steps.version.outputs.value }} for Windows (x64).
 
             Keeps `Data/GuildData.lua` current in the background. No .NET runtime
             needed. Unsigned, so SmartScreen will ask on first run.
+
+            Install or update with one line in PowerShell:
+
+            ```powershell
+            irm https://raw.githubusercontent.com/ChrisMartin86/RoS-Tools/main/scripts/Install-Sidecar.ps1 | iex
+            ```
           draft: false
           prerelease: false

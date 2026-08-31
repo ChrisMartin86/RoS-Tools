@@ -190,9 +190,15 @@ scheduled runs.
 
 **It is meant for one or two people — the maintainer and the guild leader.**
 Handing it out guild-wide buys nothing; everyone else gets the same data through
-sync, one hop later. Download `RoSToolsSidecar.exe` from the
-[latest release](https://github.com/ChrisMartin86/RoS-Tools/releases), run it
-once, and let it start with Windows.
+sync, one hop later. Install and update it with one line in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ChrisMartin86/RoS-Tools/main/scripts/Install-Sidecar.ps1 | iex
+```
+
+The same line does both — it stops if you are already current, verifies the
+download against the release checksum, and restarts the app afterward. Run it
+once, then let the app start with Windows.
 
 It never touches the game process, and refuses to install anything that does not
 validate as a real export. Full details:

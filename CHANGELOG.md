@@ -56,6 +56,21 @@
 - **`sidecar.yml` workflow.** Builds and tests the sidecar on every push
   touching `Sidecar/`, and publishes a self-contained exe on a
   `sidecar-vX.Y.Z` tag.
+- **`scripts/Install-Sidecar.ps1` — one line that installs the sidecar and
+  updates it later.** Picks the newest `sidecar-v*` release, compares it against
+  the version of the exe already on disk and stops if it already matches,
+  verifies the download against the release's SHA-256, closes the running
+  instance, swaps the exe and starts it again. A checksum mismatch installs
+  nothing. It updates in place — the target defaults to wherever the sidecar
+  already runs from, then the start-with-Windows entry, then
+  `%LOCALAPPDATA%\RoS-Tools` — and if the location moves it repoints an existing
+  start-with-Windows entry so that does not silently break. Knobs:
+  `ROSTOOLS_SIDECAR_PATH`, `ROSTOOLS_SIDECAR_VERSION`, `ROSTOOLS_SIDECAR_FORCE`,
+  `ROSTOOLS_SIDECAR_NOSTART`.
+- **Sidecar releases now publish a SHA-256 beside the exe.** `Sidecar/README.md`
+  had promised one since the sidecar shipped; `sidecar.yml` had never produced
+  it. That README also named the asset `RoSToolsSidecar.exe`, while the workflow
+  has always published `RoSToolsSidecar-<version>-win-x64.exe`. Both corrected.
 - **`scripts/Install-Dev.ps1` — a one-liner install of any branch, tag or commit,
   for debugging.** Finds WoW at the default location (then the uninstall registry
   key, then the usual places), downloads that ref's archive from GitHub, and

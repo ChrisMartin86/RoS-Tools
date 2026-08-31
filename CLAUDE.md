@@ -166,6 +166,13 @@ guild-wide is pointless and is explicitly not the plan.
 testing a branch on a machine with no checkout). Both directories are
 rsync-excluded from the CurseForge zip and are never handed to a guildmate.
 
+`scripts/Install-Sidecar.ps1` belongs to the maintainer audience, not this one:
+it installs and updates the tray app. It is the only script that touches the
+GitHub API, and it must keep filtering releases by the `sidecar-v` tag prefix —
+`release.yml` publishes to CurseForge rather than to GitHub Releases today, but
+a future GitHub release from any other stream must never be mistaken for a
+sidecar build.
+
 ### What went away on 2026-08-29, and what did not
 
 Deleted: `scripts/Install-RoSTools.ps1`, `scripts/Update-RoSToolsData.ps1`,
@@ -188,8 +195,8 @@ The answer has to be about *seeding* data, which is the sidecar's job.
 
 ### Rules for anything piped into `iex`
 
-`scripts/Install-Dev.ps1` is the only such script left, and it must keep running
-on **Windows PowerShell 5.1** as well as 7:
+`scripts/Install-Dev.ps1` and `scripts/Install-Sidecar.ps1` are the two, and both
+must keep running on **Windows PowerShell 5.1** as well as 7:
 
 - **No `param()` block and no `$PSScriptRoot`.** Piping into `iex` supplies
   neither. Every knob is an environment variable (`ROSTOOLS_REF`,
@@ -208,6 +215,11 @@ on **Windows PowerShell 5.1** as well as 7:
   optional module whose absence reports as an unrecognised-command error. The
   assembly needs an `Add-Type -AssemblyName System.IO.Compression.FileSystem` on
   5.1 and must *not* get one on 7 — guard it with `-as [type]`.
+- **Compare release versions through a normaliser, not as strings.**
+  `FileVersionInfo` hands back a 4-part `1.3.0.0` (or a `1.3.0+sha`
+  `ProductVersion`) while a tag says `1.3.0`; compared naively an up-to-date
+  install looks stale and re-downloads 50 MB every run.
+  `Install-Sidecar.ps1`'s `Get-Comparable` flattens both to major/minor/build.
 - **Never `Join-Path` a path whose drive may not exist.** `Join-Path` resolves the
   drive qualifier through the provider and throws *"Cannot find drive"* for an
   unmounted letter; with `$ErrorActionPreference = 'Stop'` that ends the run

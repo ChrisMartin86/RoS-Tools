@@ -115,4 +115,4 @@ function Comm:HandleAddonMessage(prefix, message, channel, sender)
 
   ns.Data:ApplyLiveUpdate(senderKey, math.floor(ilvl))
   ns.Debug(("comm: accepted %s = %d"):format(senderKey, math.floor(ilvl)))
-end
+en

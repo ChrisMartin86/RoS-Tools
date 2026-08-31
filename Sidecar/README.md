@@ -23,21 +23,39 @@ actually holding the fresh file. This app is the seed. Run it on the maintainer'
 PC, maybe the guild leader's as a second, and stop there; handing it out
 guild-wide buys nothing but redundant polling of the same branch.
 
-## Install
+## Install and update
 
-1. Download `RoSToolsSidecar.exe` from the
-   [latest sidecar release](https://github.com/ChrisMartin86/RoS-Tools/releases).
-2. Put it somewhere it can live — `%LOCALAPPDATA%\RoS-Tools` is a fine home.
-3. Run it. It finds your WoW install, shows you where, and offers to start with
-   Windows.
+One line in PowerShell — Windows PowerShell 5.1 or PowerShell 7, either works:
+
+```powershell
+irm https://raw.githubusercontent.com/ChrisMartin86/RoS-Tools/main/scripts/Install-Sidecar.ps1 | iex
+```
+
+The same line installs it and updates it later. It picks the newest
+`sidecar-v*` release, compares it against the exe already on disk and stops if
+you are current, checks the download against the release's SHA-256, closes the
+running instance, swaps the exe and starts it again. Nothing is installed if the
+checksum does not match. Knobs, since `iex` leaves no way to pass parameters:
+
+| Variable | Effect |
+|---|---|
+| `ROSTOOLS_SIDECAR_PATH` | Where to install. Default: wherever it already runs from, else the start-with-Windows entry, else `%LOCALAPPDATA%\RoS-Tools` |
+| `ROSTOOLS_SIDECAR_VERSION` | Pin a version, e.g. `1.2.0`. A pin may move you backwards |
+| `ROSTOOLS_SIDECAR_FORCE` | Reinstall even if the version already matches |
+| `ROSTOOLS_SIDECAR_NOSTART` | Do not launch it afterward |
+
+By hand instead: download `RoSToolsSidecar-<version>-win-x64.exe` from the
+[latest sidecar release](https://github.com/ChrisMartin86/RoS-Tools/releases),
+put it somewhere it can live, and run it. It finds your WoW install, shows you
+where, and offers to start with Windows.
 
 Install the addon first — the sidecar refreshes the roster inside RoS-Tools, it
 does not install the addon. CurseForge does that.
 
 **Windows will warn you the first time.** The build is unsigned, so SmartScreen
-shows *"Windows protected your PC"*. Click **More info**, then **Run anyway**. If
-you would rather verify than trust, each release ships a
-`RoSToolsSidecar.exe.sha256` alongside the exe.
+shows *"Windows protected your PC"*. Click **More info**, then **Run anyway**.
+Every release ships a `.sha256` beside the exe if you would rather verify than
+trust; the script above checks it for you.
 
 ## Using it
 
