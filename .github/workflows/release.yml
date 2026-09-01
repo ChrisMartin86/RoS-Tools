@@ -99,6 +99,13 @@ jobs:
           echo "Changelog for $VERSION:"
           cat changelog.md
 
+      # The point of this step is to ship the FRESHEST export, and freshness is
+      # what generated_epoch is for. The swap used to be unconditional: the two
+      # greps below confirm shape, not age. So if the daily workflow had been
+      # failing -- and note it only errors when the credentials are *unset*, not
+      # when they are wrong -- and a maintainer regenerated locally and committed
+      # to main, this step replaced that fresh file with the stale branch copy,
+      # which is the exact opposite of the documented intent.
       - name: Pull the freshest guild data
         run: |
           git fetch --depth=1 origin "$DATA_BRANCH"
@@ -114,7 +121,33 @@ jobs:
             exit 1
           fi
 
-          cp fresh-guild-data.lua Data/GuildData.lua
+          read_epoch() {
+            [ -f "$1" ] || return 0
+            sed -n 's/.*generated_epoch[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$1" | head -1
+          }
+
+          branch_epoch=$(read_epoch fresh-guild-data.lua)
+          tree_epoch=$(read_epoch Data/GuildData.lua)
+
+          if [ -z "$branch_epoch" ]; then
+            echo "::error::Could not read generated_epoch from the $DATA_BRANCH copy of GuildData.lua."
+            exit 1
+          fi
+          # No epoch in the tree copy means it predates the field, so anything
+          # from the branch is newer.
+          tree_epoch=${tree_epoch:-0}
+
+          echo "$DATA_BRANCH copy: generated_epoch=$branch_epoch"
+          echo "this branch:       generated_epoch=$tree_epoch"
+
+          if [ "$branch_epoch" -gt "$tree_epoch" ]; then
+            cp fresh-guild-data.lua Data/GuildData.lua
+            echo "Using the $DATA_BRANCH export -- it is $((branch_epoch - tree_epoch))s newer."
+          else
+            echo "::notice::Keeping the GuildData.lua committed on this branch: it is $((tree_epoch - branch_epoch))s newer than the $DATA_BRANCH copy, so the daily export is probably stale or failing."
+            echo "Keeping the copy committed on this branch."
+          fi
+
           echo "Packaged guild data: $(wc -c < Data/GuildData.lua) bytes."
 
       - name: Build the zip
@@ -149,6 +182,36 @@ jobs:
           echo "zip=$zip_name" >> "$GITHUB_OUTPUT"
           unzip -l "$zip_name"
 
+          # The exclusion list above is now ENFORCED, not eyeballed. `unzip -l`
+          # printed a listing whose exit status nobody looked at, so deleting
+          # --exclude 'Sidecar' shipped ~40 C# files inside the CurseForge zip
+          # and the workflow stayed green. CLAUDE.md's "check it after touching
+          # that list" is a human step; this is the machine one.
+          contents=$(unzip -Z1 "$zip_name")
+
+          forbidden=$(printf '%s\n' "$contents" |
+            grep -E '(^|/)\.git|(^|/)(build|Tools|scripts|Sidecar)/|\.md$|(^|/)fresh-guild-data\.lua$' || true)
+          if [ -n "$forbidden" ]; then
+            echo "::error::$zip_name contains files that must never ship to CurseForge:"
+            printf '%s\n' "$forbidden" | sed 's/^/  /'
+            echo "::error::Check the --exclude list in this step."
+            exit 1
+          fi
+
+          # And the other direction: the payload that must be there.
+          for required in \
+            "$ADDON_NAME/$ADDON_NAME.toc" \
+            "$ADDON_NAME/Data/GuildData.lua" \
+            "$ADDON_NAME/Core/Events.lua"
+          do
+            if ! printf '%s\n' "$contents" | grep -qxF "$required"; then
+              echo "::error::$required is missing from $zip_name."
+              exit 1
+            fi
+          done
+
+          echo "Zip contents verified: nothing excluded slipped in, and the addon payload is present."
+
       - name: Resolve CurseForge game version ids
         id: versions
         env:
@@ -179,6 +242,7 @@ jobs:
           echo "Matched '$WANTED' -> $ids"
 
       - name: Upload to CurseForge
+        id: upload
         if: ${{ !inputs.dry_run }}
         env:
           CF_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
@@ -228,22 +292,37 @@ jobs:
           path: ${{ steps.package.outputs.zip }}
           if-no-files-found: error
 
+      # Every value reaches the script through env:, never by ${{ }} substitution
+      # into the source. release_type and dry_run are constrained by the input
+      # form today, but the pattern that let a git tag execute on a runner is
+      # the pattern, not the particular field.
       - name: Summary
         if: always()
         env:
           VERSION: ${{ steps.toc.outputs.version }}
           ZIP: ${{ steps.package.outputs.zip }}
+          GAME_VERSION_IDS: ${{ steps.versions.outputs.ids }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PACKAGE_OUTCOME: ${{ steps.package.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
         run: |
           {
             echo "### CurseForge release"
             echo
             echo "- Version: \`$VERSION\`"
-            echo "- Package: \`$ZIP\`"
-            echo "- Game versions: \`${{ steps.versions.outputs.ids }}\`"
-            echo "- Release type: \`${{ inputs.release_type }}\`"
-            if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "- Package: \`${ZIP:-not built}\`"
+            echo "- Game versions: \`${GAME_VERSION_IDS:-none resolved}\`"
+            echo "- Release type: \`$RELEASE_TYPE\`"
+            if [ "$PACKAGE_OUTCOME" != "success" ]; then
+              echo "- **The package step did not succeed** (\`${PACKAGE_OUTCOME:-skipped}\`) -- nothing was uploaded."
+            elif [ "$DRY_RUN" = "true" ]; then
               echo "- **Dry run** -- nothing was uploaded."
+            elif [ "$UPLOAD_OUTCOME" != "success" ]; then
+              echo "- **The upload did not succeed** (\`${UPLOAD_OUTCOME:-skipped}\`)."
             elif [ -n "${file_id:-}" ]; then
               echo "- Uploaded as file id \`$file_id\`."
+            else
+              echo "- Uploaded."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

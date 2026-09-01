@@ -220,6 +220,27 @@ public class UpdateServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task A_304_answering_a_forced_check_is_a_failure_not_a_success()
+    {
+        // force skips the validators, so this 304 answers a request that carried
+        // none - the same misbehaving proxy as above. The guard read `!cacheUsable`
+        // while the request had been built from `force || !cacheUsable`, so with a
+        // perfectly good cache and force set it fell through to "Already up to date"
+        // and silently defeated the one thing the user explicitly asked for: a
+        // check that ignores the cache.
+        File.WriteAllText(_destination, ValidRoster);
+        SeedCache();
+
+        var handler = StubHandler.Status(HttpStatusCode.NotModified);
+        var result = await Service(handler).CheckAsync(force: true);
+
+        Assert.Null(handler.LastIfNoneMatch);
+        Assert.Equal(UpdateOutcome.Failed, result.Outcome);
+        Assert.Contains("304", result.Message);
+        Assert.NotNull(_store.Current.LastError);
+    }
+
+    [Fact]
     public async Task A_304_over_a_destination_we_cannot_vouch_for_is_not_reported_as_current()
     {
         SeedCache();
@@ -319,6 +340,45 @@ public class UpdateServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task A_download_past_the_size_ceiling_is_refused_on_its_Content_Length()
+    {
+        // A mistyped DataUrl pointing at something large used to be written into
+        // %TEMP% in full and then read back into memory - several times over, once
+        // decoded - before the validator's export-size rule got anywhere near it.
+        File.WriteAllText(_destination, ValidRoster);
+        var huge = ValidRoster + new string('x', GuildDataValidator.MaxRosterBytes);
+
+        var result = await Service(StubHandler.Ok(huge)).CheckAsync(force: false);
+
+        Assert.Equal(UpdateOutcome.Failed, result.Outcome);
+        Assert.Contains("ceiling", result.Message, StringComparison.Ordinal);
+        Assert.Equal(ValidRoster, File.ReadAllText(_destination));
+    }
+
+    [Fact]
+    public async Task A_download_past_the_size_ceiling_is_stopped_even_without_a_Content_Length()
+    {
+        // Content-Length is a hint: it can be absent on a chunked response, or
+        // simply wrong. The copy has to count what actually arrives.
+        File.WriteAllText(_destination, ValidRoster);
+        var huge = ValidRoster + new string('x', GuildDataValidator.MaxRosterBytes);
+
+        var result = await Service(StubHandler.OfUnknownLength(huge)).CheckAsync(force: false);
+
+        Assert.Equal(UpdateOutcome.Failed, result.Outcome);
+        Assert.Contains("ceiling", result.Message, StringComparison.Ordinal);
+        Assert.Equal(ValidRoster, File.ReadAllText(_destination));
+    }
+
+    [Fact]
+    public async Task A_roster_comfortably_under_the_ceiling_still_installs()
+    {
+        var result = await Service(StubHandler.Ok(ValidRoster)).CheckAsync(force: false);
+
+        Assert.Equal(UpdateOutcome.Updated, result.Outcome);
+    }
+
+    [Fact]
     public async Task A_stale_configured_path_fails_loudly_instead_of_writing_elsewhere()
     {
         _store.Update(s => s.AddOnPath = Path.Combine(_root, "gone"));
@@ -378,6 +438,13 @@ public class UpdateServiceTests : IDisposable
             return response;
         });
 
+        /// <summary>A 200 whose body length the client cannot know up front.</summary>
+        public static StubHandler OfUnknownLength(string body) => new(_ =>
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new UnknownLengthContent(System.Text.Encoding.UTF8.GetBytes(body)),
+            });
+
         public static StubHandler Status(HttpStatusCode code) => new(_ => new HttpResponseMessage(code));
 
         public static StubHandler Throws() =>
@@ -391,6 +458,20 @@ public class UpdateServiceTests : IDisposable
                 : null;
 
             return Task.FromResult(_respond(request));
+        }
+    }
+
+    /// <summary>Content that refuses to say how long it is, the way a chunked
+    /// response does.</summary>
+    private sealed class UnknownLengthContent(byte[] body) : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            stream.WriteAsync(body, 0, body.Length);
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
         }
     }
 }

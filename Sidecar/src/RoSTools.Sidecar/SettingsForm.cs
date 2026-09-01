@@ -255,7 +255,9 @@ public sealed class SettingsForm : Form
     // ------------------------------------------------------------------
     private void LoadFromSettings()
     {
-        var settings = _store.Current;
+        // Snapshot rather than Current: the poll thread can be inside
+        // SettingsStore.Update on the same instance while this window is being built.
+        var settings = _store.Snapshot();
 
         // Remember whether the box is showing a real setting or just what auto-detect
         // found, so Save can tell the difference. Writing the pre-filled value back
@@ -318,7 +320,40 @@ public sealed class SettingsForm : Form
         }
     }
 
+    /// <summary>
+    /// Saves, and reports its own failures. Every call inside <see cref="Save"/>
+    /// currently swallows its own errors, so nothing concrete throws today - but the
+    /// two callers make an escape invisible if one ever does: Save's Click handler
+    /// would hand it to <see cref="Application.ThreadException"/>, which only logs,
+    /// and "Check now" discards the Task it came from. Either way the user sees a
+    /// window that looks saved and settings that are not.
+    /// </summary>
     private bool SaveSettings(bool announce)
+    {
+        try
+        {
+            return Save(announce);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("could not save settings", ex);
+
+            _lastResult.ForeColor = Color.FromArgb(160, 40, 30);
+            _lastResult.Text = $"Settings were NOT saved: {ex.Message}";
+
+            MessageBox.Show(
+                this,
+                $"The settings could not be saved:\n\n{ex.Message}\n\n"
+                + $"Nothing was changed. The log folder is {Log.Directory}.",
+                "RoS-Tools Sidecar",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+
+            return false;
+        }
+    }
+
+    private bool Save(bool announce)
     {
         var path = _addOnPath.Text.Trim();
 
@@ -352,11 +387,15 @@ public sealed class SettingsForm : Form
             _autoDetected is not null &&
             string.Equals(path, _autoDetected, StringComparison.OrdinalIgnoreCase);
 
+        // Explicitly rooted, and resolved out here rather than inside the mutation.
+        // A relative path would make the destination follow whatever directory the
+        // process happened to start in; resolving it before the lock means a path
+        // GetFullPath refuses cannot leave Current half-written and unsaved.
+        var rooted = path.Length == 0 || stillAutoDetected ? null : Path.GetFullPath(path);
+
         _store.Update(s =>
         {
-            // Explicitly rooted. A relative path here would make the destination
-            // follow whatever directory the process happened to start in.
-            s.AddOnPath = path.Length == 0 || stillAutoDetected ? null : Path.GetFullPath(path);
+            s.AddOnPath = rooted;
             s.DataUrl = url;
             s.PollIntervalHours = (int)_interval.Value;
             s.StartWithWindows = _autoStart.Checked;
@@ -383,17 +422,21 @@ public sealed class SettingsForm : Form
 
     private async Task CheckNowAsync()
     {
+        // Saving first is deliberate - a check has to run against what the window
+        // shows - but it must not be able to throw out here, where the caller has
+        // discarded the Task and nothing would ever observe it. SaveSettings owns
+        // its own failures and answers false.
         if (!SaveSettings(announce: false))
         {
             return;
         }
 
-        _checkButton.Enabled = false;
-        _lastResult.ForeColor = SystemColors.ControlText;
-        _lastResult.Text = "Checking...";
-
         try
         {
+            _checkButton.Enabled = false;
+            _lastResult.ForeColor = SystemColors.ControlText;
+            _lastResult.Text = "Checking...";
+
             await _checkNow().ConfigureAwait(true);
         }
         catch (Exception ex)
@@ -439,12 +482,19 @@ public sealed class SettingsForm : Form
 
     private void ShowStoredResult()
     {
-        var settings = _store.Current;
+        var settings = _store.Snapshot();
 
-        if (settings.LastError is not null)
+        // A load failure is sticky and lives on the store, not on the settings
+        // instance: UpdateService.Record() nulls Current.LastError on every
+        // successful check, so a settings file we could not read would stop
+        // being mentioned here about a minute after startup. It outranks a
+        // check result, because nothing typed into this window will persist
+        // while it stands.
+        var failure = _store.LoadFailure ?? settings.LastError;
+        if (failure is not null)
         {
             _lastResult.ForeColor = Color.FromArgb(160, 40, 30);
-            _lastResult.Text = settings.LastError;
+            _lastResult.Text = failure;
             return;
         }
 

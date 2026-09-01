@@ -117,18 +117,37 @@ register("stats", "", "Roster item level summary", function()
 end)
 
 register("set", "<option> [on|off]", "Toggle or set an option", function(args)
-  local key, value = args:match("^(%S+)%s*(%S*)$")
-  if not key or key == "" then
+  -- Third capture is the trailing remainder. The old two-capture anchored
+  -- pattern simply failed to match on three or more tokens, and a nil key
+  -- fell into the listing branch below -- so "/ros set staleDays 14 x"
+  -- printed the whole options table and looked like it had worked.
+  local key, value, extra = (args or ""):match("^%s*(%S*)%s*(%S*)%s*(.-)%s*$")
+  if key == "" then
     ns.Print("options:")
-    for name, default in pairs(ns.DEFAULTS) do
+    -- Sorted, not pairs(). Lua 5.1 does not reseed its string hashes, so
+    -- pairs() is stable within a build -- but the order it gives is the
+    -- table's internal bucket order, which is neither alphabetical nor
+    -- anything a reader can predict, and it shifts the moment an option is
+    -- added or the interpreter changes. A list of settings is read by eye;
+    -- it gets sorted.
+    local names = {}
+    for name in pairs(ns.DEFAULTS) do names[#names + 1] = name end
+    table.sort(names)
+    for i = 1, #names do
+      local name = names[i]
       local current = ns.db[name]
       local shown = (type(current) == "boolean")
         and (current and "|cff00ff00on|r" or "|cffff4444off|r")
         or tostring(current)
       DEFAULT_CHAT_FRAME:AddMessage(("  %s%-18s%s %s  %s"):format(
         ns.COLOR.brand, name, ns.COLOR.reset, shown,
-        ns.Colorize("dim", "(default " .. tostring(default) .. ")")))
+        ns.Colorize("dim", "(default " .. tostring(ns.DEFAULTS[name]) .. ")")))
     end
+    return
+  end
+
+  if extra ~= "" then
+    ns.Error("too many arguments -- usage: /ros set <option> [on|off]")
     return
   end
 
@@ -179,6 +198,10 @@ register("sync", "[now|forget]", "Roster snapshot sync status and controls", fun
     return
   end
 
+  -- Count() throughout this command: it describes the table loaded on THIS
+  -- client. Data:ShareableCount() is the smaller wire number Sync announces,
+  -- and quoting that here under-reported a client with pre-2.0 leftovers or
+  -- an unshareable key by exactly the entries it still answers lookups from.
   local kind, info = ns.Data:SourceInfo()
   local age = ns.Data:AgeInDays()
   ns.Print(("source: %s -- %s entries, exported %s%s"):format(
@@ -212,6 +235,8 @@ register("sync", "[now|forget]", "Roster snapshot sync status and controls", fun
 end)
 
 register("reload", "", "Rebuild the lookup table from Data/GuildData.lua", function()
+  -- Build() returns the local total, which is what this line is about: the
+  -- lookup table that was just rebuilt, not the subset Sync would serialize.
   local count = ns.Data:Build()
   ns.Print(("rebuilt -- %d entries"):format(count))
 end)

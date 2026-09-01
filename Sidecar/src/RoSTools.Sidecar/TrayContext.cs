@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.Versioning;
 using System.Threading;
+using Microsoft.Win32;
 using RoSTools.Sidecar.Core;
 using RoSTools.Sidecar.Core.Blizzard;
 using RoSTools.Sidecar.Core.Web;
@@ -15,6 +16,9 @@ namespace RoSTools.Sidecar;
 [SupportedOSPlatform("windows")]
 public sealed class TrayContext : ApplicationContext
 {
+    /// <summary>How long shutdown waits for an in-flight console pull to finish.</summary>
+    private static readonly TimeSpan PullQuiesceTimeout = TimeSpan.FromSeconds(2);
+
     private readonly SettingsStore _store = new();
     private readonly GuildDataClient _client = new();
     private readonly UpdateService _updates;
@@ -35,14 +39,22 @@ public sealed class TrayContext : ApplicationContext
 
     private readonly RegisteredWaitHandle? _showSettingsWait;
     private readonly EventWaitHandle? _showSettingsEvent;
+    private readonly RegisteredWaitHandle? _quitWait;
+    private readonly EventWaitHandle? _quitEvent;
 
     private SettingsForm? _settingsForm;
     private bool _disposed;
 
-    public TrayContext(EventWaitHandle? showSettingsEvent = null)
+    public TrayContext(EventWaitHandle? showSettingsEvent = null, EventWaitHandle? quitEvent = null)
     {
         Paths.EnsureStateDirectory();
-        _store.Load();
+        var settings = _store.Load();
+
+        // Nothing else re-asserts this. StartWithWindows is written when the user
+        // ticks the box and never read back, so a Run entry left pointing at an old
+        // location - the exe moved by anything other than Install-Sidecar.ps1 - stays
+        // broken forever while the box goes on saying it is on.
+        AutoStart.Reassert(settings.StartWithWindows);
 
         _updates = new UpdateService(_store, _client);
         _poll = new PollService(_store, _updates);
@@ -78,6 +90,14 @@ public sealed class TrayContext : ApplicationContext
 
         RefreshStatus();
 
+        // A ghost icon after an update is the visible half of this: Install-Sidecar.ps1
+        // kills the process, so Quit never runs and the shell keeps painting an icon
+        // for a process that is gone. A kill cannot be intercepted from in here, but
+        // every softer exit can, and the quit event below gives the installer a way to
+        // ask for one.
+        Application.ApplicationExit += OnApplicationExit;
+        SystemEvents.SessionEnding += OnSessionEnding;
+
         if (showSettingsEvent is not null)
         {
             _showSettingsEvent = showSettingsEvent;
@@ -89,7 +109,18 @@ public sealed class TrayContext : ApplicationContext
                 executeOnlyOnce: false);
         }
 
-        if (!_store.Current.FirstRunCompleted)
+        if (quitEvent is not null)
+        {
+            _quitEvent = quitEvent;
+            _quitWait = ThreadPool.RegisterWaitForSingleObject(
+                quitEvent,
+                (_, _) => Post(Quit),
+                state: null,
+                millisecondsTimeOutInterval: Timeout.Infinite,
+                executeOnlyOnce: true);
+        }
+
+        if (!settings.FirstRunCompleted)
         {
             // Runs after the message loop is up, so the window has somewhere to sit.
             Post(RunFirstRun);
@@ -132,11 +163,25 @@ public sealed class TrayContext : ApplicationContext
     // ------------------------------------------------------------------
     private void RefreshStatus(UpdateResult? result = null)
     {
-        var settings = _store.Current;
+        // Snapshot, not Current. This runs on the UI thread while the poll thread is
+        // free to be inside SettingsStore.Update mutating the very same instance under
+        // its lock. DateTimeOffset? is wider than a word, so LastUpdateUtc and
+        // LastCheckUtc can be read torn - a nonsense instant that renders as an absurd
+        // "updated 53 years ago", or throws out of the arithmetic below.
+        var settings = _store.Snapshot();
 
-        if (result?.IsFailure == true || (result is null && settings.LastError is not null))
+        // A failed load first, and independently of the check. It is the more serious
+        // of the two - the settings file, and the client secret in it, is either
+        // quarantined or being protected by refusing to save - and it does not live in
+        // LastError precisely because UpdateService.Record owns that field and nulls
+        // it on the first successful check. Read straight off the store, where it is
+        // sticky, so the warning cannot be wiped by a poll thirty seconds later.
+        var message = _store.LoadFailure
+            ?? (result?.IsFailure == true ? result.Message : null)
+            ?? (result is null ? settings.LastError : null);
+
+        if (message is not null)
         {
-            var message = result?.Message ?? settings.LastError!;
             _statusItem.Text = Truncate(message, 60);
             SetIcon(TrayState.Error, Truncate($"RoS-Tools Sidecar - {message}", 127));
             return;
@@ -267,7 +312,7 @@ public sealed class TrayContext : ApplicationContext
     // ------------------------------------------------------------------
     private void OpenAddOnFolder()
     {
-        var folder = _store.Current.AddOnPath;
+        var folder = _store.Snapshot().AddOnPath;
         if (!AddOnLocator.LooksLikeAddOnFolder(folder))
         {
             folder = AddOnLocator.FindAddOnFolder();
@@ -413,9 +458,35 @@ public sealed class TrayContext : ApplicationContext
 
     private void Quit()
     {
-        _icon.Visible = false;
+        HideIcon();
         ExitThread();
     }
+
+    /// <summary>
+    /// The shell only reaps a tray icon when it next notices the owning process is
+    /// gone, which for most users is the next time they hover the notification area.
+    /// Hiding it explicitly on every exit path we can see is what keeps a stale icon
+    /// from outliving the process.
+    /// </summary>
+    private void HideIcon()
+    {
+        try
+        {
+            _icon.Visible = false;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"could not hide the tray icon: {ex.Message}");
+        }
+    }
+
+    private void OnApplicationExit(object? sender, EventArgs e) => HideIcon();
+
+    /// <summary>
+    /// Raised on the SystemEvents thread, so the icon is touched through the UI
+    /// thread like everything else rather than from underneath it.
+    /// </summary>
+    private void OnSessionEnding(object? sender, SessionEndingEventArgs e) => Post(HideIcon);
 
     private void Post(Action action)
     {
@@ -434,6 +505,59 @@ public sealed class TrayContext : ApplicationContext
         }
     }
 
+    /// <summary>
+    /// Stops the console and waits for what it started, so nothing is left holding a
+    /// callback into a service that is about to be disposed.
+    /// </summary>
+    private void ShutDownConsole()
+    {
+        ConsoleServer? console;
+        PullService? pulls;
+
+        lock (_consoleGate)
+        {
+            console = _console;
+            pulls = _pulls;
+            _console = null;
+            _pulls = null;
+        }
+
+        if (console is null)
+        {
+            return;
+        }
+
+        try
+        {
+            console.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"the console did not shut down cleanly: {ex.Message}");
+        }
+
+        // DisposeAsync stops the listener and waits on the accept loop, but requests
+        // are dispatched fire-and-forget, so one can still be inside a pull - or
+        // inside the check callback - after it returns. Bounded, because a wedged
+        // request must not be able to hold Quit open.
+        if (pulls is null)
+        {
+            return;
+        }
+
+        var deadline = DateTimeOffset.UtcNow + PullQuiesceTimeout;
+
+        while (pulls.IsRunning && DateTimeOffset.UtcNow < deadline)
+        {
+            Thread.Sleep(50);
+        }
+
+        if (pulls.IsRunning)
+        {
+            Log.Warn("a console pull was still running at shutdown; carrying on anyway.");
+        }
+    }
+
     // ------------------------------------------------------------------
     protected override void Dispose(bool disposing)
     {
@@ -441,16 +565,36 @@ public sealed class TrayContext : ApplicationContext
         {
             _disposed = true;
 
+            Application.ApplicationExit -= OnApplicationExit;
+            SystemEvents.SessionEnding -= OnSessionEnding;
+
             _showSettingsWait?.Unregister(null);
             _showSettingsEvent?.Dispose();
+            _quitWait?.Unregister(null);
+            _quitEvent?.Dispose();
 
             _poll.CheckStarted -= OnCheckStarted;
             _poll.CheckCompleted -= OnCheckCompleted;
-            _poll.DisposeAsync().AsTask().GetAwaiter().GetResult();
 
-            _console?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            // Console first, poll service second, and the order is the fix. OpenConsole
+            // hands ConsoleApi the closure `() => _poll.CheckNowAsync(force: true)`, so
+            // the console holds a live callback into the poll service for as long as it
+            // is answering requests. Disposing the poll service first tears down its
+            // CancellationTokenSource and SemaphoreSlim underneath a request that is
+            // already in flight, and the ObjectDisposedException surfaces out of the
+            // request handler - clicking Quit while the console is mid-check.
+            ShutDownConsole();
 
-            _icon.Visible = false;
+            try
+            {
+                _poll.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"the poll service did not shut down cleanly: {ex.Message}");
+            }
+
+            HideIcon();
             _icon.Dispose();
             _client.Dispose();
             _settingsForm?.Dispose();

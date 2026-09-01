@@ -82,64 +82,110 @@ public sealed partial class BlizzardApiClient : IDisposable
         return value.ToLowerInvariant();
     }
 
+    /// <summary>
+    /// Mints the bearer token every other call depends on.
+    /// <para>
+    /// Retried on the same terms as <see cref="GetAsync"/>, and for a blunter reason:
+    /// this was the one request in the client with no retry at all, so a single
+    /// transient 503 from <c>oauth.battle.net</c> - the kind
+    /// <see cref="Retryable"/> exists for - threw away a whole ~180-call pull before
+    /// it had made one. 401 and 403 stay non-retryable: bad credentials are not a
+    /// blip, and hammering the token endpoint with them is how an application gets
+    /// rate-limited for real.
+    /// </para>
+    /// </summary>
     public async Task AuthenticateAsync(string clientId, string clientSecret, CancellationToken ct)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, OAuthHost)
-        {
-            Content = new FormUrlEncodedContent([
-                new KeyValuePair<string, string>("grant_type", "client_credentials"),
-            ]),
-        };
-
         var basic = Convert.ToBase64String(
             System.Text.Encoding.UTF8.GetBytes($"{clientId}:{clientSecret}"));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
 
-        HttpResponseMessage response;
-        try
+        for (var attempt = 0; attempt < MaxAttempts; attempt++)
         {
-            response = await _http.SendAsync(request, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            throw new BlizzardApiException($"could not reach Blizzard's OAuth service: {ex.Message}");
-        }
+            ct.ThrowIfCancellationRequested();
 
-        using (response)
-        {
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            // A fresh message per attempt: HttpRequestMessage - and its content - may
+            // not be sent twice, and reusing one turns a retry into
+            // InvalidOperationException instead of a second request.
+            using var request = new HttpRequestMessage(HttpMethod.Post, OAuthHost)
             {
-                throw new BlizzardApiException(
-                    "Blizzard rejected those credentials. Check the client ID and secret at " +
-                    "https://develop.battle.net/access/clients.");
-            }
+                Content = new FormUrlEncodedContent([
+                    new KeyValuePair<string, string>("grant_type", "client_credentials"),
+                ]),
+            };
 
-            if (!response.IsSuccessStatusCode)
-            {
-                throw new BlizzardApiException(
-                    $"Blizzard's OAuth service answered {(int)response.StatusCode} {response.ReasonPhrase}.");
-            }
+            request.Headers.Authorization = new AuthenticationHeaderValue("Basic", basic);
 
-            TokenResponse? token;
+            HttpResponseMessage response;
             try
             {
-                token = await response.Content
-                    .ReadFromJsonAsync<TokenResponse>(cancellationToken: ct)
-                    .ConfigureAwait(false);
+                response = await _http.SendAsync(request, ct).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is JsonException or NotSupportedException)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                throw new BlizzardApiException("Blizzard's OAuth response was not the JSON we expected.");
+                if (attempt == MaxAttempts - 1)
+                {
+                    throw new BlizzardApiException(
+                        $"could not reach Blizzard's OAuth service: {ex.Message}");
+                }
+
+                await Task.Delay(Backoff(attempt), ct).ConfigureAwait(false);
+                continue;
             }
 
-            if (string.IsNullOrWhiteSpace(token?.AccessToken))
+            using (response)
             {
-                throw new BlizzardApiException("Blizzard returned no access token.");
-            }
+                if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                {
+                    throw new BlizzardApiException(
+                        "Blizzard rejected those credentials. Check the client ID and secret at " +
+                        "https://develop.battle.net/access/clients.");
+                }
 
-            _http.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", token.AccessToken);
+                if (Retryable.Contains(response.StatusCode))
+                {
+                    if (attempt == MaxAttempts - 1)
+                    {
+                        throw new BlizzardApiException(
+                            $"Blizzard's OAuth service kept answering {(int)response.StatusCode} " +
+                            $"after {MaxAttempts} attempts.");
+                    }
+
+                    await Task.Delay(Clamp(RetryAfter(response) ?? Backoff(attempt)), ct)
+                        .ConfigureAwait(false);
+                    continue;
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new BlizzardApiException(
+                        $"Blizzard's OAuth service answered {(int)response.StatusCode} {response.ReasonPhrase}.");
+                }
+
+                TokenResponse? token;
+                try
+                {
+                    token = await response.Content
+                        .ReadFromJsonAsync<TokenResponse>(cancellationToken: ct)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is JsonException or NotSupportedException)
+                {
+                    throw new BlizzardApiException("Blizzard's OAuth response was not the JSON we expected.");
+                }
+
+                if (string.IsNullOrWhiteSpace(token?.AccessToken))
+                {
+                    throw new BlizzardApiException("Blizzard returned no access token.");
+                }
+
+                _http.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", token.AccessToken);
+                return;
+            }
         }
+
+        // Unreachable: every path above either returns or throws on the last attempt.
+        throw new BlizzardApiException("Blizzard's OAuth service could not be reached.");
     }
 
     public async Task<IReadOnlyList<RosterMember>> GetRosterAsync(
@@ -281,15 +327,8 @@ public sealed partial class BlizzardApiClient : IDisposable
                             $"Blizzard kept answering {(int)response.StatusCode} after {MaxAttempts} attempts.");
                     }
 
-                    // Honour Retry-After when it is sent: guessing shorter than the
-                    // server asked is how a 429 becomes a longer 429.
-                    var wait = response.Headers.RetryAfter?.Delta
-                               ?? (response.Headers.RetryAfter?.Date is { } date
-                                   ? (TimeSpan?)(date - DateTimeOffset.UtcNow)
-                                   : null)
-                               ?? Backoff(attempt);
-
-                    await Task.Delay(Clamp(wait), ct).ConfigureAwait(false);
+                    await Task.Delay(Clamp(RetryAfter(response) ?? Backoff(attempt)), ct)
+                        .ConfigureAwait(false);
                     continue;
                 }
 
@@ -318,6 +357,17 @@ public sealed partial class BlizzardApiClient : IDisposable
 
         return null;
     }
+
+    /// <summary>
+    /// The server's own answer to "when should I come back", or null when it did not
+    /// send one. Honouring it matters: guessing shorter than the server asked is how a
+    /// 429 becomes a longer 429.
+    /// </summary>
+    private static TimeSpan? RetryAfter(HttpResponseMessage response) =>
+        response.Headers.RetryAfter?.Delta
+        ?? (response.Headers.RetryAfter?.Date is { } date
+            ? (TimeSpan?)(date - DateTimeOffset.UtcNow)
+            : null);
 
     private static TimeSpan Backoff(int attempt) =>
         TimeSpan.FromMilliseconds(250 * Math.Pow(2, attempt));

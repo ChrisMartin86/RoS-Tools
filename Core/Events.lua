@@ -18,9 +18,26 @@ frame:RegisterEvent("PLAYER_REGEN_ENABLED")
 --- Calls a Comm.lua entry point the same way Init.lua's module dispatch()
 --- calls module methods: pcall-wrapped, so a bug in Comm.lua degrades to
 --- "no live updates" instead of breaking the rest of the event handler.
+---
+--- A missing *method* is normal -- not every entry point is defined. A missing
+--- *table* is not: Comm.lua and Sync.lua assign ns.Comm / ns.Sync at file
+--- scope, so a nil one means that file never compiled and every call through
+--- here has been quietly doing nothing. Silence there cost real debugging
+--- time once already; say it out loud instead. Once per file, not once per
+--- call -- CHAT_MSG_ADDON alone would flood the chat frame.
+local missingReported = {}
+
 local function call(what, method, ...)
   local target = ns[what]
-  local fn = target and target[method]
+  if not target then
+    if not missingReported[what] then
+      missingReported[what] = true
+      ns.Error(("Core/%s.lua failed to load -- %s is off for this session"):format(what, what))
+    end
+    return
+  end
+
+  local fn = target[method]
   if type(fn) ~= "function" then return end
   local ok, err = pcall(fn, target, ...)
   if not ok then
@@ -49,6 +66,11 @@ frame:SetScript("OnEvent", function(_, event, ...)
     callSync("OnEnable")
     ns:EnableModules()
 
+    -- Count(), the size of the table this client answers lookups from --
+    -- NOT Data:ShareableCount(), the smaller wire number Sync announces.
+    -- Quoting the wire number here told a client whose entries are all
+    -- pre-2.0 leftovers that it had loaded 0 entries while every tooltip on
+    -- screen worked.
     local count = ns.Data:Count()
     local age   = ns.Data:AgeInDays()
     local suffix = ""
@@ -60,6 +82,12 @@ frame:SetScript("OnEvent", function(_, event, ...)
     end
     ns.Print(("loaded -- %s entries%s. %s"):format(
       ns.Colorize("value", count), suffix, ns.Colorize("dim", "/ros for help")))
+
+    -- Which modules actually registered. A module whose file failed to
+    -- compile is simply absent from the registry -- there is no manifest to
+    -- check it against, and deliberately so, but naming the survivors makes
+    -- the gap obvious to anyone already looking at debug output.
+    ns.Debug("modules loaded: " .. (ns:ModuleList() or "none"))
 
   elseif event == "PLAYER_REGEN_DISABLED" then
     ns.inCombat = true

@@ -224,10 +224,12 @@ internal static class ConsolePage
 (function () {
   "use strict";
 
-  // The session token is delivered in the page body, not the URL: the URL is a
-  // browser command-line argument and any process running as this user can read
-  // it. What the URL carried was a single-use bootstrap token, already burned by
-  // the time this script runs.
+  // The session token is delivered in the page body, not the URL, so it never
+  // lands anywhere a URL outlives the session: browser history, shell history, a
+  // saved command line. What the URL carried was a single-use bootstrap token,
+  // already burned by the time this script runs. That bounds the exposure; it does
+  // not remove it. Another process running as this user could have raced the
+  // browser to that link, and the sidecar log is where a redemption shows up.
   //
   // sessionStorage, not a cookie: cookies ignore the port, so any other localhost
   // server could read this one. sessionStorage is scoped to the full origin, and
@@ -281,7 +283,13 @@ internal static class ConsolePage
   // ---- state ------------------------------------------------------------
   function loadState() {
     return api("/api/state").then(function (s) {
-      if (!s.ok) { say($("credMsg"), "bad", s.error || "Could not read state."); return; }
+      if (!s.ok) {
+        // Explicitly null, not "whatever was there before": everything downstream
+        // guards on it, and a half-stale state object is worse than none.
+        state = null;
+        say($("credMsg"), "bad", s.error || "Could not read state.");
+        return;
+      }
       state = s;
       renderState();
     });
@@ -385,14 +393,32 @@ internal static class ConsolePage
   $("cancelBtn").onclick = function () { api("/api/pull", "DELETE"); };
 
   function startPolling() {
-    if (poller) { clearInterval(poller); }
+    stopPolling();
     poller = setInterval(pollPull, 700);
     pollPull();
   }
 
+  // One place that puts the pull controls back, so no early return can leave the
+  // page polling forever with the Pull button disabled.
+  function stopPolling() {
+    if (poller) { clearInterval(poller); poller = null; }
+    $("pullBtn").disabled = false;
+    $("cancelBtn").hidden = true;
+    $("progressBar").hidden = true;
+  }
+
   function pollPull() {
     api("/api/pull").then(function (p) {
-      if (!p.ok) { return; }
+      // A 401 or a 500 mid-pull used to return here without clearing the interval,
+      // leaving a 700 ms poll running for the life of the page against an endpoint
+      // that was never going to answer, with the Pull button disabled the whole
+      // time and nothing on screen saying why.
+      if (!p.ok) {
+        stopPolling();
+        say($("pullMsg"), "bad",
+          p.error || "Lost contact with the sidecar. Reopen the console from the tray menu.");
+        return;
+      }
 
       var pr = p.progress;
       var pct = pr.total > 0 ? Math.round((pr.done / pr.total) * 100) : (p.running ? 8 : 0);
@@ -403,10 +429,7 @@ internal static class ConsolePage
         return;
       }
 
-      clearInterval(poller); poller = null;
-      $("pullBtn").disabled = false;
-      $("cancelBtn").hidden = true;
-      $("progressBar").hidden = true;
+      stopPolling();
 
       if (!p.result) { return; }
 
@@ -418,10 +441,27 @@ internal static class ConsolePage
 
       say($("pullMsg"), "ok", pr.message);
       pulled = p.result;
-      renderResult();
+      showResult();
       tab = "pulled";
       selectTab();
     });
+  }
+
+  // The only call site for renderResult. Installing announces a roster to the whole
+  // guild, so a render that throws must not leave a live Install button beside a
+  // half-drawn card - which is exactly what happened when the shrink warning was
+  // the line that threw: the summary and stats were already on screen, the warning
+  // never appeared, and Install stayed enabled.
+  function showResult() {
+    try {
+      renderResult();
+      $("installBtn").disabled = false;
+    } catch (e) {
+      $("installBtn").disabled = true;
+      say($("installMsg"), "bad",
+        "This page could not finish checking the pulled roster, so installing is " +
+        "disabled. Reopen the console from the tray menu and pull again.");
+    }
   }
 
   function renderResult() {
@@ -434,9 +474,14 @@ internal static class ConsolePage
       id.guild + " - " + id.realm + " (" + id.region.toUpperCase() + ") at " +
       new Date(r.atUtc).toLocaleString() + ".";
 
+    // "no profile" and "unreachable" are different facts and the review screen has
+    // to keep them apart: the first is an alt that never logged in, the second is
+    // Blizzard failing after five attempts, and only the second means "come back
+    // later". The server refuses an install over the second on its own.
     $("pullStats").innerHTML =
       stat(r.entries.length, "with item level") +
       stat(r.noProfile, "no profile") +
+      stat(r.unreachable || 0, "unreachable") +
       stat(r.droppedKeys.length, "unusable names") +
       stat(r.exportBytes + " B", "share size / 40000");
 
@@ -457,15 +502,27 @@ internal static class ConsolePage
           esc(r.droppedKeys.slice(0, 8).join(", ")) + "</div>"
         : "");
 
+    // Every read of state on these lines is guarded. The previous version guarded
+    // it on one line and dereferenced it on the next, so a failed /api/state - an
+    // UnauthorizedAccessException from the addon-folder probe is enough - threw a
+    // TypeError here, after the card was already unhidden and filled, and the one
+    // thing it skipped was the shrink warning.
     var installedCount = state && state.installed && state.installed.ok ? state.installed.entries : 0;
-    var floor = installedCount * (state.shrinkFloorPercent / 100);
+    var floorPct = state && typeof state.shrinkFloorPercent === "number" ? state.shrinkFloorPercent : 80;
+    var floor = installedCount * (floorPct / 100);
 
     if (installedCount && r.entries.length < floor) {
       say($("shrinkWarning"), "bad",
         "This pull has " + r.entries.length + " characters against " + installedCount +
-        " installed. That is below the " + state.shrinkFloorPercent +
+        " installed. That is below the " + floorPct +
         "% floor, so installing it needs the override ticked. Pulling again usually fixes it - " +
         "a batch of throttled or private profiles looks exactly like this.");
+    } else if (!state || !state.installed || !state.installed.ok) {
+      // No baseline on this page means no comparison on this page. Say so rather
+      // than showing an empty space that reads as "checked, and fine".
+      say($("shrinkWarning"), "warn",
+        "The installed roster could not be read, so this page cannot compare the pull " +
+        "against it. The sidecar still checks before it writes anything.");
     } else {
       say($("shrinkWarning"), "", "");
     }
@@ -561,7 +618,7 @@ internal static class ConsolePage
         startPolling();
       } else if (p.ok && p.result && p.result.ok) {
         pulled = p.result;
-        renderResult();
+        showResult();
       }
     });
   });

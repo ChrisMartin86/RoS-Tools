@@ -31,6 +31,48 @@ local liveOverlayLowered = {}  -- lowercased key -> canonical key
 -- whole snapshot.
 local legacyKeys = {}
 
+-- How many of `count` came from that backfill. Data:Count() is what the V:
+-- announcement quotes and it has to describe what Export() would actually
+-- serialize, so the legacy keys have to be subtractable rather than merely
+-- flagged. Data:LocalCount() is the other number -- the size of the lookup
+-- table this client actually answers from -- and every surface that
+-- describes the local table quotes that one instead.
+local legacyCount = 0
+
+-- Keys the receiver's own validation would throw away: a ";" or "=" in a key
+-- from a hand-edited or badly generated Data/GuildData.lua. Exporting one
+-- doesn't just lose that member -- ";" splits the entry in two on the wire,
+-- so the receiver counts one unparseable fragment and one phantom member,
+-- and past MAX_BAD_FRACTION it rejects the entire snapshot with nothing on
+-- the exporting client to point at. Same treatment as the legacy keys:
+-- resolvable locally, never serialized, never counted as shareable.
+local badKeys  = {}
+local badCount = 0
+local warnedBadKeys = false
+
+-- A ":" or ";" in an identity field makes a header no peer can parse: the
+-- H: line is ":"-delimited and Sync.lua's parseBody captures each field as
+-- [^:;]*, so such a body is transferred in full and then discarded as
+-- "malformed header" by every receiver, forever, while we burn our serve
+-- budget on it.
+--
+-- "|" is in here for a weaker reason and is NOT the defence against markup:
+-- a receiver prints what a *peer* sent it, not what we sent, so the guard
+-- that matters is on the receive side (Core/Sync.lua escapes peer-supplied
+-- identity fields before they reach the chat frame). This one only keeps us
+-- from being the client that emits markup in the first place.
+local UNSAFE_META = "[:;|]"
+
+--- Would Core/Sync.lua's receiver accept this key? Borrowed from Sync rather
+--- than re-spelled here, so the two sides cannot drift apart. If Sync failed
+--- to load there is nobody to export to and nothing to filter for, so an
+--- absent checker means "keep everything".
+local function exportableKey(key)
+  local check = ns.Sync and ns.Sync.IsValidKey
+  if type(check) ~= "function" then return true end
+  return check(key) == true
+end
+
 -- Which source Build() last chose: "file" (the shipped Data/GuildData.lua)
 -- or "sync" (a snapshot adopted from a guildmate via Core/Sync.lua).
 local sourceKind = "file"
@@ -97,7 +139,10 @@ function Data:Build()
   wipe(lowered)
   wipe(meta)
   wipe(legacyKeys)
+  wipe(badKeys)
   count = 0
+  legacyCount = 0
+  badCount = 0
   -- liveOverlay is NOT wiped here. Build() only ever fires once, at
   -- ADDON_LOADED, before Comm.lua has received anything, so this is moot
   -- today -- but if Build() is ever called again mid-session (e.g. a
@@ -137,8 +182,18 @@ function Data:Build()
         ilvls[k] = math.floor(n)
         lowered[k:lower()] = k
         count = count + 1
+        if not exportableKey(k) then
+          badKeys[k] = true
+          badCount = badCount + 1
+        end
       end
     end
+  end
+
+  if badCount > 0 and not warnedBadKeys then
+    warnedBadKeys = true
+    ns.Warn(("%d roster key%s cannot be put on the wire and will not be shared -- "):format(
+      badCount, badCount == 1 and "" or "s") .. "re-run the exporter")
   end
 
   -- Backwards compatibility with the pre-2.0 flat globals, in case an
@@ -155,6 +210,7 @@ function Data:Build()
         lowered[k:lower()] = k
         legacyKeys[k] = true
         count = count + 1
+        legacyCount = legacyCount + 1
       end
     end
     -- Only the timestamp, never the identity fields. A legacy meta carrying
@@ -170,7 +226,12 @@ function Data:Build()
   end
 
   built = true
-  ns.Debug(("data built: %d entries from %s"):format(count, sourceKind))
+  ns.Debug(("data built: %d entries from %s (%d legacy, %d unshareable keys)"):format(
+    count, sourceKind, legacyCount, badCount))
+  -- The LOCAL total, deliberately: every caller of Build() is describing the
+  -- table it just built ("/ros reload -- N entries"), not what would go on
+  -- the wire. Data:Count() is the wire number and the only thing that quotes
+  -- it is the announce/export path.
   return count
 end
 
@@ -219,13 +280,28 @@ function Data:Export()
   local epoch = tonumber(meta.generated_epoch)
   if not epoch or count == 0 then return nil end
 
+  -- Refuse rather than emit a header the receiver cannot parse. Returning nil
+  -- is the correct outcome: handleRequest turns it into a "nodata" refusal,
+  -- which peers fall through immediately instead of paying for a full
+  -- transfer they will throw away.
+  local identity = { "region", "realm", "guild" }
+  for i = 1, #identity do
+    local field = identity[i]
+    local value = meta[field]
+    if type(value) == "string" and value:find(UNSAFE_META) then
+      ns.Debug(("data: refusing to export -- meta.%s contains a header delimiter (%s)"):format(
+        field, value))
+      return nil
+    end
+  end
+
   local parts = {
     ("H:%d:%s:%s:%s:%s;"):format(epoch, meta.region or "", meta.realm or "",
                                  meta.guild or "", tostring(meta.schema or "")),
   }
   local n = 0
   for key, ilvl in pairs(ilvls) do
-    if not legacyKeys[key] then
+    if not legacyKeys[key] and not badKeys[key] then
       parts[#parts + 1] = ("%s=%d;"):format(key, ilvl)
       n = n + 1
     end
@@ -286,14 +362,26 @@ end
 -- ------------------------------------------------------------------
 -- Queries
 -- ------------------------------------------------------------------
---- Size of the built table -- the static/adopted source only, with the live
---- overlay excluded. That is deliberate and load-bearing: this number is
---- what Core/Sync.lua announces alongside its epoch, so it has to describe
---- the same thing Export() would serialize. Stats()/Top()/Find() merge the
---- overlay in and can therefore report one more than this.
+--- The LOCAL number: every entry in the lookup table, including the pre-2.0
+--- backfill and any key that cannot go on the wire. This is what lookups
+--- answer from, so it is what the login line, "/ros reload" and "/ros sync"
+--- quote -- a client whose entries are all legacy leftovers still answers
+--- every tooltip, and telling it that it loaded 0 entries is simply false.
+--- Stats()/Top()/Find() merge the live overlay in and can report more.
 function Data:Count()
   ensureBuilt()
   return count
+end
+
+--- The WIRE number: how many entries Export() would actually serialize --
+--- the legacy backfill and any key the receiver would refuse both taken out.
+--- Load-bearing, and the reason this is a separate accessor: Core/Sync.lua
+--- announces it alongside its epoch, so it has to describe the same thing
+--- Export() writes. The excluded keys stay in `ilvls` regardless; the
+--- tooltip path still resolves them.
+function Data:ShareableCount()
+  ensureBuilt()
+  return count - legacyCount - badCount
 end
 
 function Data:Meta()

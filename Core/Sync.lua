@@ -251,7 +251,7 @@ local function doAnnounce()
   -- it ignores it, which is the forward-compatibility rule this protocol
   -- adopted. Peers use it to avoid asking a receive-only client for data
   -- it will only refuse.
-  send(("V:%d:%d:%d"):format(epoch, ns.Data:Count(), sharing() and 1 or 0))
+  send(("V:%d:%d:%d"):format(epoch, ns.Data:ShareableCount(), sharing() and 1 or 0))
   lastAnnounceAt = GetTime()
   ns.Debug(("sync: announced epoch %d"):format(epoch))
 end
@@ -321,7 +321,7 @@ function replyVersion(targetKey, targetName)
     if not sharing() then return end
     local epoch = myEpoch()
     if epoch == 0 then return end
-    send(("V:%d:%d:1"):format(epoch, ns.Data:Count()), targetName)
+    send(("V:%d:%d:1"):format(epoch, ns.Data:ShareableCount()), targetName)
   end)
 end
 
@@ -552,8 +552,26 @@ end
 --- `|` is excluded because adopted keys are printed straight into the chat
 --- frame and the roster browser, where "|cffff0000" is markup, not text.
 local function validKey(key)
+  if type(key) ~= "string" then return false end
   if #key > MAX_KEY_LEN then return false end
   return key:find("^[^%s:;=|]+%-[%a%d%-]+$") ~= nil
+end
+
+--- The same check, exposed so Core/Data.lua can apply it on the SEND side and
+--- keep a key no receiver would accept out of the body, instead of shipping
+--- one that every receiver silently drops (and, when a ";" splits an entry in
+--- two, counts as a failure against MAX_BAD_FRACTION). One definition, both
+--- directions.
+Sync.IsValidKey = validKey
+
+--- Peer-supplied text on its way to the chat frame. The H: fields are
+--- captured as [^:;]*, which accepts "|" quite happily, and a rejected
+--- snapshot's identity is printed verbatim below -- so a peer could put
+--- markup, or a fake item link, into a guildmate's chat frame. Nothing here
+--- is meant to render as markup, so the escape character stops being one.
+--- Same treatment Modules/Roster.lua gives its candidate dump.
+local function safeText(s)
+  return (tostring(s):gsub("|", "!"))
 end
 
 local function parseBody(body)
@@ -610,7 +628,9 @@ local function validate(snap)
   local id = ns.Data:IdentityKey()
   local theirs = ("%s/%s/%s"):format(snap.region or "", snap.realm or "", snap.guild or "")
   if not id or id ~= theirs then
-    return false, ("identity mismatch (%s)"):format(theirs)
+    -- Escaped: this reason string is printed, and every part of `theirs`
+    -- came off the wire.
+    return false, ("identity mismatch (%s)"):format(safeText(theirs))
   end
 
   -- Size is checked against a fixed ceiling, NOT against
@@ -645,20 +665,35 @@ local function adopt(snap, from)
     return
   end
 
-  ns.Data:AdoptSnapshot({
+  -- AdoptSnapshot reports what actually happened rather than what was
+  -- attempted: it returns false when the rebuild did not land on the
+  -- snapshot -- no identity key, no ns.db, or the shipped file still winning.
+  -- Discarding that boolean announced "roster updated" for data we had just
+  -- thrown away, and reset attempts/tried so the same dead end was picked
+  -- again on the next beat.
+  local adopted = ns.Data:AdoptSnapshot({
     epoch      = snap.epoch,
     schema     = snap.schema,
     ilvls      = snap.ilvls,
     receivedAt = time(),
     from       = from,
   })
+  if not adopted then
+    ns.Debug(("sync: AdoptSnapshot did not take the snapshot from %s"):format(from))
+    -- Not refunding the attempt is the point of this branch -- the transfer
+    -- really did cost us one. But we are still stale, so fall through to the
+    -- next-best holder exactly as the reject path above does; returning here
+    -- left nothing in flight until the anti-entropy beat 15-25 minutes later.
+    beginRequest()
+    return
+  end
 
   attempts = 0
   wipe(tried)   -- a peer that failed us at an older epoch is a fine source at the next one
 
   if ns.db.syncNotify then
     ns.Print(("roster updated from %s -- %s entries, exported %s"):format(
-      ns.Colorize("value", from), ns.Colorize("value", ns.Data:Count()),
+      ns.Colorize("value", from), ns.Colorize("value", ns.Data:ShareableCount()),
       ns.Data:GeneratedAt() or "?"))
   end
 

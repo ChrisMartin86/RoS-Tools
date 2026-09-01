@@ -98,8 +98,16 @@ function Resolve-AddOnsRoot {
     foreach ($candidate in $candidates) {
         if (-not $candidate) { continue }
 
-        $addOnsRoot = Join-Path $candidate '_retail_\Interface\AddOns'
-        if (Test-Path $addOnsRoot) { return $addOnsRoot }
+        # Plain string concatenation, deliberately not Join-Path, and Test-Path
+        # with -ErrorAction SilentlyContinue. Join-Path resolves the drive
+        # qualifier through the provider and throws "Cannot find drive" for a
+        # letter that is not mounted, and Test-Path raises the same error; with
+        # $ErrorActionPreference = 'Stop' either one ends the run instead of
+        # moving on to the next candidate, so WoW on a detached E: -- or
+        # -WowPath 'Z:\WoW' -- died with "Cannot find drive" rather than
+        # reaching the friendly throw below. Install-Dev.ps1 does the same.
+        $addOnsRoot = ([string] $candidate).TrimEnd('\') + '\_retail_\Interface\AddOns'
+        if (Test-Path -LiteralPath $addOnsRoot -ErrorAction SilentlyContinue) { return $addOnsRoot }
     }
 
     throw "Could not find a WoW '_retail_\Interface\AddOns' folder under '$WowPath'. Pass -WowPath pointing at your WoW install (the folder that directly contains _retail_)."

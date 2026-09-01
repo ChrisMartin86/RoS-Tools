@@ -40,8 +40,12 @@ public class PullServiceTests : IDisposable
         _store.Update(s => s.AddOnPath = _addOn);
     }
 
+    /// <summary>
+    /// Throttle off. These tests pull repeatedly on purpose; the server-side minimum
+    /// interval between pulls has its own tests, in <see cref="PullThrottleTests"/>.
+    /// </summary>
     private PullService Service(BlizzardStub stub) =>
-        new(_store, region => new BlizzardApiClient(region, stub));
+        new(_store, region => new BlizzardApiClient(region, stub), TimeSpan.Zero);
 
     /// <summary>Puts a roster of <paramref name="count"/> characters in the addon folder.</summary>
     private void Install(int count, GuildIdentity? identity = null)
@@ -86,7 +90,7 @@ public class PullServiceTests : IDisposable
         var pull = await service.PullAsync(Credentials, Request);
         Assert.True(pull.Ok, pull.Error);
 
-        var outcome = service.Install(overrideShrink: false);
+        var outcome = await service.InstallAsync(overrideShrink: false);
 
         Assert.True(outcome.Ok, outcome.Message);
         Assert.Equal(25, outcome.Entries);
@@ -110,7 +114,7 @@ public class PullServiceTests : IDisposable
         var service = Service(BlizzardStub.WithRoster(50));
         Assert.True((await service.PullAsync(Credentials, Request)).Ok);
 
-        var outcome = service.Install(overrideShrink: false);
+        var outcome = await service.InstallAsync(overrideShrink: false);
 
         Assert.False(outcome.Ok);
         Assert.True(outcome.NeedsOverride);
@@ -128,7 +132,7 @@ public class PullServiceTests : IDisposable
         var service = Service(BlizzardStub.WithRoster(50));
         Assert.True((await service.PullAsync(Credentials, Request)).Ok);
 
-        var outcome = service.Install(overrideShrink: true);
+        var outcome = await service.InstallAsync(overrideShrink: true);
 
         Assert.True(outcome.Ok, outcome.Message);
         Assert.Equal(50, GuildDataValidator.Validate(_destination).Entries);
@@ -142,7 +146,7 @@ public class PullServiceTests : IDisposable
         var service = Service(BlizzardStub.WithRoster(85));
         Assert.True((await service.PullAsync(Credentials, Request)).Ok);
 
-        Assert.True(service.Install(overrideShrink: false).Ok);
+        Assert.True((await service.InstallAsync(overrideShrink: false)).Ok);
     }
 
     /// <summary>
@@ -255,7 +259,7 @@ public class PullServiceTests : IDisposable
     [Fact]
     public async Task Install_before_a_pull_says_so_rather_than_writing_anything()
     {
-        var outcome = Service(BlizzardStub.WithRoster(1)).Install(overrideShrink: false);
+        var outcome = await Service(BlizzardStub.WithRoster(1)).InstallAsync(overrideShrink: false);
 
         Assert.False(outcome.Ok);
         Assert.False(File.Exists(_destination));
@@ -282,7 +286,7 @@ public class PullServiceTests : IDisposable
 
         var service = Service(BlizzardStub.WithRoster(30));
         Assert.True((await service.PullAsync(Credentials, Request)).Ok);
-        Assert.True(service.Install(overrideShrink: false).Ok);
+        Assert.True((await service.InstallAsync(overrideShrink: false)).Ok);
 
         Assert.Null(_store.Current.StateFor(_destination));
     }

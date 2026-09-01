@@ -25,6 +25,31 @@ public sealed class BlizzardStub : HttpMessageHandler
 
     public HttpStatusCode RosterStatus { get; set; } = HttpStatusCode.OK;
 
+    public int TokenCalls { get; private set; }
+
+    /// <summary>Status codes to answer the token request with before succeeding, one
+    /// per queued entry. The token POST is the one request that used to have no
+    /// retry at all.</summary>
+    public Queue<HttpStatusCode> TokenFailures { get; } = new();
+
+    /// <summary>
+    /// Per-character status overrides, by character name. Lets a test lose a
+    /// specific slice of the roster to API errors rather than to 404s - the two are
+    /// counted separately, and only the first means "Blizzard is having a bad time".
+    /// </summary>
+    public Dictionary<string, HttpStatusCode> ForcedCharacterStatus { get; } =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Awaited before the roster response is produced, so a test can hold a pull
+    /// open in a known phase instead of racing it.
+    /// </summary>
+    public Func<Task>? BeforeRoster { get; set; }
+
+    /// <summary>Completed the first time a roster request arrives.</summary>
+    public TaskCompletionSource RosterReached { get; } =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public BlizzardStub Add(string name, string realm, int level, int? ilvl)
     {
         _members.Add((name, realm, level));
@@ -44,7 +69,7 @@ public sealed class BlizzardStub : HttpMessageHandler
         return stub;
     }
 
-    protected override Task<HttpResponseMessage> SendAsync(
+    protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
@@ -52,18 +77,31 @@ public sealed class BlizzardStub : HttpMessageHandler
 
         if (url.Host == "oauth.battle.net")
         {
-            return Task.FromResult(TokenStatus == HttpStatusCode.OK
+            TokenCalls++;
+
+            if (TokenFailures.Count > 0)
+            {
+                return Json(TokenFailures.Dequeue(), """{"error":"temporarily unavailable"}""");
+            }
+
+            return TokenStatus == HttpStatusCode.OK
                 ? Json(HttpStatusCode.OK, """{"access_token":"stub-token","expires_in":86400}""")
-                : Json(TokenStatus, """{"error":"invalid_client"}"""));
+                : Json(TokenStatus, """{"error":"invalid_client"}""");
         }
 
         if (url.AbsolutePath.EndsWith("/roster", StringComparison.Ordinal))
         {
             RosterCalls++;
+            RosterReached.TrySetResult();
+
+            if (BeforeRoster is { } hold)
+            {
+                await hold().WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
 
             if (RosterStatus != HttpStatusCode.OK)
             {
-                return Task.FromResult(Json(RosterStatus, "{}"));
+                return Json(RosterStatus, "{}");
             }
 
             var members = _members.Select(m => new
@@ -71,7 +109,7 @@ public sealed class BlizzardStub : HttpMessageHandler
                 character = new { name = m.Name, level = m.Level, realm = new { slug = m.Realm } },
             });
 
-            return Task.FromResult(Json(HttpStatusCode.OK, JsonSerializer.Serialize(new { members })));
+            return Json(HttpStatusCode.OK, JsonSerializer.Serialize(new { members }));
         }
 
         if (url.AbsolutePath.Contains("/profile/wow/character/", StringComparison.Ordinal))
@@ -80,27 +118,32 @@ public sealed class BlizzardStub : HttpMessageHandler
 
             if (CharacterFailures.Count > 0)
             {
-                return Task.FromResult(Json(CharacterFailures.Dequeue(), "{}"));
+                return Json(CharacterFailures.Dequeue(), "{}");
             }
 
             var parts = url.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
             var realm = Uri.UnescapeDataString(parts[^2]);
             var name = Uri.UnescapeDataString(parts[^1]);
 
+            if (ForcedCharacterStatus.TryGetValue(name, out var forced))
+            {
+                return Json(forced, "{}");
+            }
+
             var match = _ilvls.FirstOrDefault(kv =>
                 string.Equals(kv.Key, $"{realm}/{name}", StringComparison.OrdinalIgnoreCase));
 
             if (match.Key is null)
             {
-                return Task.FromResult(Json(HttpStatusCode.NotFound, "{}"));
+                return Json(HttpStatusCode.NotFound, "{}");
             }
 
-            return Task.FromResult(match.Value is { } ilvl
+            return match.Value is { } ilvl
                 ? Json(HttpStatusCode.OK, $$"""{"equipped_item_level":{{ilvl}}}""")
-                : Json(HttpStatusCode.NotFound, "{}"));
+                : Json(HttpStatusCode.NotFound, "{}");
         }
 
-        return Task.FromResult(Json(HttpStatusCode.NotFound, "{}"));
+        return Json(HttpStatusCode.NotFound, "{}");
     }
 
     private static HttpResponseMessage Json(HttpStatusCode status, string body) =>

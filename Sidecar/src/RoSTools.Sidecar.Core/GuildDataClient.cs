@@ -114,18 +114,28 @@ public sealed class GuildDataClient : IDisposable
                     $"the data source answered {(int)response.StatusCode} {response.ReasonPhrase}.");
             }
 
+            // Stop before writing, when the server is willing to say how much there
+            // is. A mistyped DataUrl pointing at an ISO or a video used to be copied
+            // into %TEMP% in full and then read into memory (several times over, once
+            // decoded) before the validator's size rule ever got a look at it.
+            var ceiling = GuildDataValidator.MaxRosterBytes;
+            if (response.Content.Headers.ContentLength is { } declared && declared > ceiling)
+            {
+                return FetchResult.Failure(TooLargeMessage(declared, ceiling));
+            }
+
             var staging = Path.Combine(
                 Path.GetTempPath(),
                 $"GuildData-{Guid.NewGuid():N}.lua");
 
             try
             {
-                await using (var target = File.Create(staging))
-                {
-                    await response.Content.CopyToAsync(target, ct).ConfigureAwait(false);
-                }
+                // Content-Length is a hint, not a promise: it can be absent (chunked)
+                // or simply wrong. Count what actually arrives and abandon the
+                // transfer the moment it goes over, rather than filling the disk.
+                var bytes = await CopyWithCeilingAsync(response, staging, ceiling, ct)
+                    .ConfigureAwait(false);
 
-                var bytes = new FileInfo(staging).Length;
                 return new FetchResult(
                     FetchOutcome.Downloaded,
                     staging,
@@ -133,6 +143,11 @@ public sealed class GuildDataClient : IDisposable
                     response.Content.Headers.LastModified?.ToString("R"),
                     bytes,
                     null);
+            }
+            catch (TooLargeException tooLarge)
+            {
+                TryDelete(staging);
+                return FetchResult.Failure(tooLarge.Message);
             }
             catch (Exception ex)
             {
@@ -147,6 +162,51 @@ public sealed class GuildDataClient : IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// Streams the body to <paramref name="staging"/>, giving up as soon as more
+    /// than <paramref name="ceiling"/> bytes have arrived. Returns the byte count.
+    /// </summary>
+    private static async Task<long> CopyWithCeilingAsync(
+        HttpResponseMessage response,
+        string staging,
+        long ceiling,
+        CancellationToken ct)
+    {
+        var buffer = new byte[81920];
+        long total = 0;
+
+        await using var source = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        await using var target = File.Create(staging);
+
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer, ct).ConfigureAwait(false);
+            if (read <= 0)
+            {
+                return total;
+            }
+
+            total += read;
+            if (total > ceiling)
+            {
+                throw new TooLargeException(TooLargeMessage(null, ceiling));
+            }
+
+            await target.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+        }
+    }
+
+    private static string TooLargeMessage(long? declared, long ceiling)
+    {
+        var size = declared is { } bytes ? $"{bytes} bytes" : $"more than {ceiling} bytes";
+
+        return $"the data source offered {size}, past the {ceiling}-byte ceiling for a " +
+               "roster file. Nothing was downloaded; check the URL.";
+    }
+
+    /// <summary>Private on purpose - it never leaves <see cref="FetchAsync"/>.</summary>
+    private sealed class TooLargeException(string message) : Exception(message);
 
     private static string? Format(EntityTagHeaderValue? tag) =>
         tag is null ? null : (tag.IsWeak ? "W/" : string.Empty) + tag.Tag;

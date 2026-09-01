@@ -89,6 +89,114 @@
 
 ### Fixed
 
+_A full-codebase audit on 2026-08-31 found the following. Each one now has a
+regression test that fails without its fix; the audit itself is kept in
+`AUDIT-2026-08-31.md`._
+
+**Addon**
+
+- **The roster item level was never stripped before being re-appended.**
+  `SUFFIX_PATTERN` in `Modules/Roster.lua` spelled `|cff` followed by eight hex
+  digits, which asks for ten digits after `|c` and therefore matched nothing at
+  all. `stripSuffix` had been a no-op since it was written, so a refresh that
+  outlived the memo stacked a second `(620)` on the row and the comparison key
+  kept the item level digits in it. Fixed — and the strip is now restricted to
+  the colours this addon can actually render, so Blizzard's own trailing text on
+  alt-grouped rows survives it, which is what the unanchored pattern was for.
+
+- **A realm with a space in it resolved to the wrong character.**
+  `Util.NormalizeKey` dropped a leading title by taking the last
+  whitespace-delimited token, so `Peidae-Moon Guard` became `Guard-<your realm>`.
+  `/ros who` was the exposed path. It now splits on the realm separator first
+  and applies the title heuristic only to the name half.
+
+- **An item level change during the broadcast cooldown was dropped, not
+  deferred.** `Core/Comm.lua` returned without rescheduling, so a second upgrade
+  inside 60 seconds never reached the guild until the player happened to change
+  gear again. It now defers, guarded so a per-slot burst cannot stack timers.
+
+- **A live item level never refreshed an open roster window**, because the memo
+  compared the rendered text rather than the number behind it.
+
+- **A `:` or `;` in the guild, realm or region silently broke roster sharing
+  guild-wide.** The sync header is `:`-delimited, so every peer discarded the
+  transfer as malformed while the holder kept burning its serve budget answering
+  requests it could only fail. `Data:Export()` now refuses to serialize an
+  unshareable header, per-entry keys are filtered with the same `validKey` the
+  receiver uses, and the exporter rejects those characters at source.
+
+- **`/ros sync` announced a count the payload did not contain**, because
+  pre-2.0 legacy keys were counted but never serialized. The wire number is now
+  `Data:ShareableCount()`; `Count()` stays the local table size that `/ros
+  reload`, `/ros sync` and the login line describe.
+
+- Snapshot adoption reported success unconditionally; a rejected snapshot no
+  longer prints "roster updated" or resets the attempt budget, and now falls
+  through to the next-best holder instead of waiting out the anti-entropy beat.
+  A peer-supplied guild identity is escaped before it reaches the chat frame.
+
+**Sidecar**
+
+- **A failing poll checked *more* often, not less.** The backoff took the
+  minimum of itself and the configured interval, so a bad export upstream moved
+  a 6-hourly client to a 5-minute one that settled at hourly — on every
+  maintainer machine at once. It was the opposite of what the comment beside it
+  promised, and `PollService` had no tests at all. It does now.
+
+- **An unreadable settings file destroyed the Blizzard client secret.** `Load()`
+  caught every exception, fell back to defaults, and the next check wrote those
+  defaults over the original — an antivirus holding the file at logon was
+  enough. The file is now moved aside first, saving is suspended while it cannot
+  be, and the warning no longer gets cleared by the next successful check.
+
+- **A forced check answered `304` reported "Already up to date"**, silently
+  defeating the cache bypass; and every manual check ran twice, the second
+  result overwriting the first in the UI.
+
+- **The rollback copy was taken from a destination nobody had validated**, so a
+  truncated roster could overwrite the last good `.bak`. A structurally intact
+  file with an implausible timestamp is still backed up; a truncated one is not.
+
+- The validator accepted Unicode whitespace that Lua 5.1 rejects outright — a
+  single non-breaking space would install a file that never loads. Downloads now
+  have a size ceiling. `Start with Windows` verifies the registry entry actually
+  points at something that exists, instead of trusting any non-empty value.
+
+- **Two clicks on "Pull roster" could leave the pull uncancellable** while the
+  UI reported it had been cancelled, and an install landing mid-start could
+  re-render the previous pull as if it were the new one. Admission is now one
+  atomic step. Pulls are throttled server-side and survive a restart, a pull
+  that cannot read most of the roster is refused without needing a baseline, and
+  a guild or realm whose slug is legitimately non-ASCII is no longer rejected.
+
+**Scripts, exporter and CI**
+
+- **`Install-Dev.ps1` could delete the addon folder and leave nothing behind.**
+  It wiped the destination before validating the payload, and the cleanup
+  removed the roster it had just promised to keep. It now stages, swaps, and
+  restores — and on any failure, including Ctrl-C, it tells you where the
+  recoverable copy is.
+
+- **`Install-Sidecar.ps1` could stop the sidecar and never restart it** (an
+  unguarded `Test-Path` on a missing drive, after the kill), install a release
+  candidate as though it were stable and then refuse the real release as "up to
+  date", and miss a running instance whose exe had been renamed. A cross-volume
+  install can no longer leave a truncated exe, and never launches one.
+
+- **A throttled export published a partial roster and exited 0.** Transport
+  failures were indistinguishable from "no profile", so 44 missing members
+  passed the publish gate and propagated. Hard failures now abort without
+  writing, `Retry-After` is honoured, and the file is written atomically.
+
+- **The publish guard only counted characters**, so an export for the wrong
+  region or guild passed it. Identity and roster overlap are both checked now.
+
+- A git tag was interpolated unquoted into workflow `run:` blocks on a job
+  holding `contents: write`; write permission is scoped to the publishing job;
+  the release swaps in the `guild-data` export only when it is actually newer;
+  and the packaging step now *fails* when dev tooling reaches the zip instead of
+  printing a listing nobody reads.
+
 - **The poller could quietly undo a hand-installed roster.** `UpdateService`
   compared nothing but ETags, so after installing a pull it would fetch the
   `guild-data` branch and reinstall it even when that file was *older* --

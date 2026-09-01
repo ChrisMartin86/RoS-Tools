@@ -582,4 +582,104 @@ public class GuildDataValidatorTests
         Assert.False(result.Ok);
         Assert.Contains("generated_epoch", result.Reason);
     }
+
+    // ------------------------------------------------------------------
+    // Whitespace Lua 5.1 does not recognise.
+    //
+    // .NET's char.IsWhiteSpace and regex \s are Unicode-aware; Lua 5.1's lexer
+    // is C isspace and meets byte 0xC2 as a syntax error. Every walker in the
+    // validator used the .NET notion, so one non-breaking space anywhere
+    // structural produced a file that passed here, installed, and then failed
+    // to compile in WoW - ns.GuildData nil, zero characters shown, and
+    // Data:IdentityKey() nil so the client can never adopt a peer snapshot
+    // again either. Silent in both directions, which is why it is here.
+    // ------------------------------------------------------------------
+
+    /// <summary>U+00A0, the one a paste or a helpful editor actually produces.</summary>
+    private const string Nbsp = "\u00A0";
+
+    [Fact]
+    public void Rejects_a_non_breaking_space_separating_an_entry_from_its_item_level()
+    {
+        var result = WithEdit(
+            "[\"Icebyte-moon-guard\"] = 302",
+            "[\"Icebyte-moon-guard\"]" + Nbsp + "= 302");
+
+        Assert.False(result.Ok, "Lua 5.1 cannot lex a non-breaking space");
+        Assert.Contains("ilvls table", result.Reason);
+    }
+
+    [Fact]
+    public void Rejects_a_non_breaking_space_between_two_entries()
+    {
+        var result = WithEdit(
+            "[\"Bonecholos-zuljin\"] = 658,",
+            "[\"Bonecholos-zuljin\"] = 658," + Nbsp);
+
+        Assert.False(result.Ok);
+        Assert.Contains("ilvls table", result.Reason);
+    }
+
+    [Theory]
+    [InlineData("\u00A0")] // no-break space
+    [InlineData("\u2007")] // figure space
+    [InlineData("\u202F")] // narrow no-break space
+    public void Rejects_every_unicode_space_the_lua_lexer_does_not_know(string space)
+    {
+        var result = WithEdit(
+            "[\"Crackilz-area-52\"] = 289",
+            "[\"Crackilz-area-52\"]" + space + "= 289");
+
+        Assert.False(result.Ok);
+    }
+
+    [Fact]
+    public void Rejects_a_non_breaking_space_in_the_meta_table()
+    {
+        var result = WithEdit(
+            "generated_epoch = 1787509007",
+            "generated_epoch" + Nbsp + "= 1787509007");
+
+        Assert.False(result.Ok);
+        Assert.Contains("meta table", result.Reason);
+    }
+
+    [Fact]
+    public void Rejects_a_non_breaking_space_outside_both_tables()
+    {
+        // Nothing inside either table is wrong here, so only the skeleton comparison
+        // can catch it - which it could not while Emit and Collapse normalised any
+        // Unicode space away to a plain one.
+        var result = WithEdit("local _, ns = ...", "local _," + Nbsp + "ns = ...");
+
+        Assert.False(result.Ok);
+        Assert.Contains("not shaped like", result.Reason);
+    }
+
+    [Fact]
+    public void Still_accepts_a_non_breaking_space_inside_a_character_name()
+    {
+        // Deliberately still allowed: it sits inside the quoted key, where Lua never
+        // lexes it, and Core/Sync.lua's own validKey accepts it. Refusing it would
+        // reject a whole roster over one member's name - the mistake this class
+        // already documents for SyncKeyShape, and one the structural fix above must
+        // not reintroduce from the other direction.
+        var result = WithEdit("[\"Icebyte-moon-guard\"]", "[\"Ice" + Nbsp + "byte-moon-guard\"]");
+
+        Assert.True(result.Ok, result.Reason);
+        Assert.Equal(4, result.Entries);
+    }
+
+    [Fact]
+    public void Still_accepts_every_ascii_space_lua_does_recognise()
+    {
+        // The other side of the fence: space, tab, vertical tab and form feed are all
+        // skipped by Lua 5.1's lexer, so tightening to ASCII must not narrow past them.
+        var result = WithEdit(
+            "[\"Icebyte-moon-guard\"] = 302",
+            "[\"Icebyte-moon-guard\"] \t\v\f = 302");
+
+        Assert.True(result.Ok, result.Reason);
+        Assert.Equal(4, result.Entries);
+    }
 }

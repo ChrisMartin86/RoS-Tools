@@ -218,6 +218,91 @@ public class ConsoleServerTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    /// <summary>
+    /// The bootstrap does not stop a process running as this user from racing the
+    /// browser to the link and taking the session token out of the page body - nothing
+    /// at this privilege level does. What it can do is leave a record, so a maintainer
+    /// who sees "That link has already been used" can find out that something else
+    /// used it, and when.
+    /// </summary>
+    [Fact]
+    public async Task Redeeming_a_bootstrap_link_is_logged()
+    {
+        var path = new Uri(_server.Url).PathAndQuery;
+
+        Assert.Equal(HttpStatusCode.OK, (await _http.GetAsync(path)).StatusCode);
+
+        var log = await ReadLogAsync();
+        Assert.Contains("console bootstrap redeemed", log, StringComparison.Ordinal);
+        Assert.Contains("session token was served", log, StringComparison.Ordinal);
+
+        // ...and so is the second attempt on the same link, which is what the victim
+        // of a race would see first.
+        Assert.Equal(HttpStatusCode.Forbidden, (await _http.GetAsync(path)).StatusCode);
+
+        log = await ReadLogAsync();
+        Assert.Contains("console bootstrap refused", log, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_wrong_bootstrap_link_is_logged_too()
+    {
+        _ = _server.Url;
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await _http.GetAsync("/?t=not-the-token")).StatusCode);
+
+        Assert.Contains("did not match the outstanding one", await ReadLogAsync(), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A handler that threw AFTER <c>WriteAsync</c> had sent headers hit a second
+    /// throw on <c>StatusCode</c>, which the one shared <c>catch {}</c> swallowed -
+    /// without ever reaching <c>Close()</c>. The connection then leaked until HTTP.sys
+    /// timed it out.
+    /// </summary>
+    [Fact]
+    public void A_failure_setting_the_status_still_closes_the_response()
+    {
+        var closed = false;
+        var aborted = false;
+
+        ConsoleServer.FailAndClose(
+            () => throw new InvalidOperationException("headers are already sent"),
+            () => closed = true,
+            () => aborted = true);
+
+        Assert.True(closed, "the response was never closed after the status assignment threw");
+        Assert.False(aborted);
+    }
+
+    /// <summary>Close can throw too, on a half-written response. Abort always frees
+    /// the connection.</summary>
+    [Fact]
+    public void A_close_that_throws_falls_back_to_abort()
+    {
+        var aborted = false;
+
+        ConsoleServer.FailAndClose(
+            () => { },
+            () => throw new InvalidOperationException("half-written"),
+            () => aborted = true);
+
+        Assert.True(aborted);
+    }
+
+    /// <summary>And the ordinary case still sets the status and closes once.</summary>
+    [Fact]
+    public void An_ordinary_failure_sets_the_status_and_closes()
+    {
+        var status = 0;
+        var closes = 0;
+
+        ConsoleServer.FailAndClose(() => status = 500, () => closes++, () => { });
+
+        Assert.Equal(500, status);
+        Assert.Equal(1, closes);
+    }
+
     [Fact]
     public async Task An_unknown_path_is_404()
     {
@@ -339,6 +424,86 @@ public class ConsoleServerTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Contains("no pulled roster", await response.Content.ReadAsStringAsync(),
             StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ------------------------------------------------------------------
+    // Shutdown
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Request handlers are started with <c>Task.Run</c> and never awaited, and every
+    /// one of them holds the server's stopping token and hands it to
+    /// <see cref="ConsoleApi"/> and on into a pull. <c>DisposeAsync</c> disposed the
+    /// source those tokens came from while handlers were still holding them.
+    /// <para>
+    /// Today that mostly gets away with it, because the source is cancelled first and
+    /// <c>CreateLinkedTokenSource</c> short-circuits on an already-cancelled token
+    /// rather than registering. Mostly is the problem: if it ever did throw, it would
+    /// throw at <c>PullService.PullAsync</c>'s <c>CreateLinkedTokenSource</c> line,
+    /// which sits OUTSIDE the try that owns the ticket-releasing finally - so the pull
+    /// slot would stay claimed for the life of the process and every later pull would
+    /// be answered "already running". Waiting for the handlers makes that unreachable
+    /// instead of unlikely.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Disposing_waits_for_a_request_that_is_still_running()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var api = new ConsoleApi(
+            _store,
+            new PullService(_store, r => new BlizzardApiClient(r, new BlizzardStub()), TimeSpan.Zero),
+            new PassthroughSecretProtector(),
+            async () =>
+            {
+                entered.TrySetResult();
+                await release.Task.ConfigureAwait(false);
+                return new UpdateResult(
+                    UpdateOutcome.AlreadyCurrent, "stub", 0, null, DateTimeOffset.UtcNow);
+            });
+
+        var server = new ConsoleServer(api);
+        server.Start();
+
+        using var http = new HttpClient { BaseAddress = new Uri($"http://localhost:{server.Port}") };
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/check");
+        request.Headers.Add("X-RoS-Token", server.Token);
+
+        // Not awaited: it is inside the handler we are about to dispose underneath.
+        var call = http.SendAsync(request);
+
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var dispose = server.DisposeAsync().AsTask();
+
+        Assert.NotSame(
+            dispose,
+            await Task.WhenAny(dispose, Task.Delay(TimeSpan.FromMilliseconds(500))));
+
+        release.SetResult();
+        await dispose.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The handler is finished, one way or another - the listener was stopped out
+        // from under its response, and that is the handler's own business. What
+        // matters is that it got there before the source it was holding went away.
+        try
+        {
+            (await call.WaitAsync(TimeSpan.FromSeconds(10))).Dispose();
+        }
+        catch (HttpRequestException)
+        {
+            // The listener was stopped mid-response. Expected, and not what this is
+            // about.
+        }
+    }
+
+    private static async Task<string> ReadLogAsync()
+    {
+        var path = Path.Combine(Log.Directory, "sidecar.log");
+        return File.Exists(path) ? await File.ReadAllTextAsync(path) : string.Empty;
     }
 
     public async Task DisposeAsync()

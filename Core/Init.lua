@@ -74,6 +74,14 @@ function ns:GetModule(name)
   return self.modules[name]
 end
 
+--- Comma-separated list of the modules that registered, in load order.
+--- Used by the PLAYER_LOGIN debug line: a module whose file failed to
+--- compile never calls RegisterModule, so it is simply missing here.
+function ns:ModuleList()
+  if #moduleOrder == 0 then return nil end
+  return table.concat(moduleOrder, ", ")
+end
+
 local function dispatch(method)
   for i = 1, #moduleOrder do
     local module = ns.modules[moduleOrder[i]]

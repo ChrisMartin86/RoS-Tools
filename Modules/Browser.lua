@@ -38,6 +38,24 @@ local function prettyName(key)
   return ("%s |cff888888-%s|r"):format(name, realm)
 end
 
+--- median / max over exactly the rows this window is showing.
+---
+--- Deliberately NOT ns.Data:Stats(), which describes the whole roster: paired
+--- with a filtered "%d shown" that produced a status line where the max was
+--- routinely not among the rows underneath it. One number from the filter and
+--- two from the roster is not a summary of anything.
+local function datasetStats()
+  local n = #dataset
+  if n == 0 then return nil end
+  local values = {}
+  for i = 1, n do values[i] = dataset[i].ilvl end
+  table.sort(values)
+  local mid = math.floor(n / 2)
+  local median = (n % 2 == 1) and values[mid + 1]
+                 or ((values[mid] + values[mid + 1]) / 2)
+  return median, values[n]
+end
+
 -- ------------------------------------------------------------------
 -- Rendering
 -- ------------------------------------------------------------------
@@ -60,10 +78,12 @@ local function refresh()
 
   FauxScrollFrame_Update(scrollFrame, #dataset, VISIBLE_ROWS, ROW_HEIGHT)
 
-  local stats = ns.Data:Stats()
-  if stats then
+  local median, max = datasetStats()
+  if median then
     frame.status:SetText(("%d shown  |  median %d  |  max %d"):format(
-      #dataset, stats.median, stats.max))
+      #dataset, math.floor(median), max))
+  elseif filterText ~= "" then
+    frame.status:SetText(("No match for '%s'."):format(filterText))
   else
     frame.status:SetText("No data loaded.")
   end

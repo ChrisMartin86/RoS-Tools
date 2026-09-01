@@ -27,12 +27,23 @@ public sealed class ConsoleApi(
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    /// <summary>Guards <see cref="_pullCancellation"/>. Interlocked.Exchange plus a
-    /// Dispose raced CancelPull's Cancel() and turned a well-timed cancel into a
-    /// 500 from an ObjectDisposedException.</summary>
-    private readonly Lock _pullGate = new();
+    /// <summary>
+    /// Serializes <c>/api/check</c>. 0 is idle, 1 is a check in flight.
+    /// <para>
+    /// The pull path has had a guard since it existed, because a second pull spends a
+    /// second ~180-call quota. This one had none: rapid clicks on Check now fired
+    /// concurrent <see cref="UpdateService"/> checks at one destination, which race on
+    /// the same file and the same ETag cache entry.
+    /// </para>
+    /// </summary>
+    private int _checking;
 
-    private CancellationTokenSource? _pullCancellation;
+    /// <summary>
+    /// How long a manual check may take before the console stops waiting on it. The
+    /// poll path has <see cref="HttpClient"/>'s own timeout under it, but nothing
+    /// bounded the request holding the console's guard.
+    /// </summary>
+    private static readonly TimeSpan CheckTimeout = TimeSpan.FromMinutes(2);
 
     public async Task<(int Status, string Body)> HandleAsync(
         string path,
@@ -50,7 +61,7 @@ public sealed class ConsoleApi(
                 ("/api/pull", "GET") => Ok(BuildPull()),
                 ("/api/pull", "POST") => StartPull(body, ct),
                 ("/api/pull", "DELETE") => CancelPull(),
-                ("/api/install", "POST") => InstallPull(body),
+                ("/api/install", "POST") => await InstallPullAsync(body).ConfigureAwait(false),
                 ("/api/check", "POST") => await CheckNowAsync().ConfigureAwait(false),
                 _ => (404, Serialize(new { ok = false, error = "No such endpoint." })),
             };
@@ -61,8 +72,19 @@ public sealed class ConsoleApi(
         }
         catch (Exception ex)
         {
+            // The message stays in the log and only in the log. It was going into the
+            // response body verbatim, which put full filesystem paths on a page any
+            // local process could read with the token - and made this an unbounded
+            // exception-message channel on the same endpoint set that handles the
+            // client secret.
             Log.Error($"console api {method} {path} failed", ex);
-            return (500, Serialize(new { ok = false, error = ex.Message }));
+
+            return (500, Serialize(new
+            {
+                ok = false,
+                error = "Something went wrong handling that request. " +
+                        "The details are in the sidecar log.",
+            }));
         }
     }
 
@@ -129,7 +151,12 @@ public sealed class ConsoleApi(
                 intervalHours = settings.EffectivePollHours,
                 lastCheckUtc = settings.LastCheckUtc,
                 lastUpdateUtc = settings.LastUpdateUtc,
-                lastError = settings.LastError,
+                // A load failure is sticky and lives on the store, not on the
+                // settings instance -- UpdateService.Record() clears
+                // Current.LastError on every successful check, which used to
+                // wipe the "your client secret needs re-entering" warning
+                // within a minute of it appearing. Surface both, failure first.
+                lastError = store.LoadFailure ?? settings.LastError,
             },
             installed,
             shrinkFloorPercent = (int)(PullService.ShrinkFloor * 100),
@@ -189,7 +216,17 @@ public sealed class ConsoleApi(
         }
         catch (Exception ex)
         {
-            return (500, Serialize(new { ok = false, error = $"Could not encrypt the secret: {ex.Message}" }));
+            // Same rule as the catch-all: the detail is a log line, not a response
+            // body. This is the endpoint that handles the secret itself.
+            Log.Error("could not encrypt the Blizzard client secret", ex);
+
+            return (500, Serialize(new
+            {
+                ok = false,
+                error = "Could not encrypt the secret on this machine, so nothing was stored. " +
+                        "The details are in the sidecar log; the environment variables are the " +
+                        "way round it.",
+            }));
         }
 
         store.Update(s =>
@@ -250,11 +287,74 @@ public sealed class ConsoleApi(
     // ------------------------------------------------------------------
     private (int, string) StartPull(string body, CancellationToken ct)
     {
-        if (pulls.IsRunning)
+        // Admission is one atomic step inside PullService, taken BEFORE any of the
+        // work below. It used to be an IsRunning read here and a MarkStarting() call
+        // ninety lines further down, with a JSON deserialize, a settings snapshot and
+        // a DPAPI Unprotect syscall in between - a window wide enough that a
+        // double-clicked button reliably put two pulls through it.
+        var admission = pulls.TryStart();
+        if (!admission.Granted)
         {
-            return (409, Serialize(new { ok = false, error = "A pull is already running." }));
+            var status = admission.Refusal == PullRefusal.TooSoon ? 429 : 409;
+            return (status, Serialize(new { ok = false, error = admission.Message }));
         }
 
+        var ticket = admission.Ticket!;
+
+        PullPlan? plan;
+        (int Status, string Body) refusal;
+        string started;
+
+        try
+        {
+            (plan, refusal) = PreparePull(body);
+
+            // Serialized HERE, while this method still owns the ticket. Past the
+            // handover below the ticket belongs to the running pull, and the catch
+            // that frees it would be freeing the slot out from under a live pull:
+            // IsRunning goes false, /api/install becomes reachable against a Last that
+            // pull is about to replace, and a second POST is admitted. Serialize over
+            // a constant anonymous type will not throw in practice - which is exactly
+            // why it must not be the one statement standing on the wrong side of the
+            // line.
+            started = Serialize(new { ok = true, message = "Pull started." });
+        }
+        catch
+        {
+            // Anything that throws between admission and the queued task would leave
+            // the slot claimed forever, and the console permanently reporting a pull
+            // that does not exist.
+            pulls.Abandon(ticket);
+            throw;
+        }
+
+        if (plan is null)
+        {
+            pulls.Abandon(ticket);
+            return refusal;
+        }
+
+        // The handover. Started, not awaited: a full roster is a minute or more of API
+        // calls, and the page polls /api/pull for progress. PullAsync catches
+        // everything, cancellation and HttpClient timeouts included, so this cannot
+        // fault. It owns the ticket from here: it creates the cancellation source,
+        // registers it against the ticket, and releases the slot in its own finally.
+        _ = Task.Run(
+            () => pulls.PullAsync(plan.Credentials, plan.Request, ticket, ct),
+            CancellationToken.None);
+
+        // Deliberately outside every catch above, and with nothing left that can throw.
+        AfterPullHandover?.Invoke();
+
+        return (202, started);
+    }
+
+    /// <summary>
+    /// Everything a pull needs, worked out before the slot is handed over. Returns a
+    /// null plan and the response to send when the request cannot be turned into one.
+    /// </summary>
+    private (PullPlan? Plan, (int, string) Refusal) PreparePull(string body)
+    {
         var input = JsonSerializer.Deserialize<PullInput>(body, Json) ?? new PullInput();
         var settings = store.Snapshot();
 
@@ -265,92 +365,71 @@ public sealed class ConsoleApi(
 
         if (realm.Length == 0 || guild.Length == 0)
         {
-            return (400, Serialize(new { ok = false, error = "A realm and a guild name are required." }));
+            return (null, (400, Serialize(new
+            {
+                ok = false,
+                error = "A realm and a guild name are required.",
+            })));
         }
 
         var credentials = ResolveCredentials(region);
         if (credentials is null)
         {
-            return (400, Serialize(new
+            return (null, (400, Serialize(new
             {
                 ok = false,
                 error = "No usable Blizzard credentials. Save a client ID and secret first.",
-            }));
+            })));
         }
 
         // Clamped: the value comes from the page, and a negative or absurd minimum
         // silently produces an empty or unfiltered roster.
         var minLevel = Math.Clamp(input.MinLevel ?? 1, 1, 80);
 
-        CancellationTokenSource linked;
-        lock (_pullGate)
-        {
-            linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            _pullCancellation = linked;
-        }
-
-        // Flip the running flag on THIS thread. The page polls as soon as this
-        // response lands, and a flag set only once the queued task runs loses that
-        // race - see PullService.Starting.
-        pulls.MarkStarting();
-
-        // Started, not awaited: a full roster is a minute or more of API calls, and
-        // the page polls /api/pull for progress. PullAsync catches everything,
-        // cancellation and HttpClient timeouts included, so this cannot fault.
-        _ = Task.Run(
-            async () =>
-            {
-                try
-                {
-                    await pulls.PullAsync(
-                        credentials, new PullRequest(region, realm, guild, minLevel), linked.Token)
-                        .ConfigureAwait(false);
-                }
-                finally
-                {
-                    lock (_pullGate)
-                    {
-                        if (ReferenceEquals(_pullCancellation, linked))
-                        {
-                            _pullCancellation = null;
-                        }
-                    }
-
-                    linked.Dispose();
-                }
-            },
-            CancellationToken.None);
-
-        return (202, Serialize(new { ok = true, message = "Pull started." }));
+        return (new PullPlan(credentials, new PullRequest(region, realm, guild, minLevel)),
+            (0, string.Empty));
     }
+
+    private sealed record PullPlan(BlizzardCredentials Credentials, PullRequest Request);
+
+    /// <summary>
+    /// Test seam: runs immediately after a pull has been handed to its background
+    /// task, and outside the catch that frees the ticket.
+    /// <para>
+    /// The handover is the line this method must not touch the ticket past, and the
+    /// only throw site that ever sat on the wrong side of it - serializing a constant
+    /// anonymous type - cannot be made to throw from a test. Without a seam the
+    /// ordering has no coverage at all, and "a catch that frees the slot under a live
+    /// pull" is exactly the kind of defect that comes back. Same reasoning as
+    /// <c>ConsoleServer.FailAndClose</c>'s delegates, which exist so an ordering that
+    /// only HTTP.sys can produce is still testable. Null in production.
+    /// </para>
+    /// </summary>
+    internal Action? AfterPullHandover { get; set; }
 
     private (int, string) CancelPull()
     {
-        lock (_pullGate)
-        {
-            try
-            {
-                _pullCancellation?.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-                // The pull finished between the null check and the call. Nothing to
-                // cancel, and nothing worth reporting.
-            }
-        }
-
-        return Ok(new { ok = true, message = "Cancelling." });
+        // Answering "Cancelling." over a pull nothing is going to cancel is worse than
+        // saying so: the ~180-call pull runs to completion and spends the whole quota
+        // while the console reports it as cancelled.
+        return pulls.CancelActive()
+            ? Ok(new { ok = true, message = "Cancelling." })
+            : (409, Serialize(new { ok = false, error = "There is no pull to cancel." }));
     }
 
     private object BuildPull()
     {
-        var progress = pulls.Progress;
-        var result = pulls.Last;
+        // One coherent read. Taken separately, running could come back false beside
+        // the PREVIOUS pull's successful result, which the page renders as a fresh
+        // roster with a live Install button.
+        var status = pulls.Status();
+        var progress = status.Progress;
+        var result = status.Last;
 
         return new
         {
             ok = true,
-            running = pulls.IsRunning,
+            running = status.Running,
             progress = new
             {
                 phase = progress.Phase.ToString(),
@@ -369,6 +448,7 @@ public sealed class ConsoleApi(
                 generatedEpoch = result.GeneratedEpoch,
                 rosterSize = result.RosterSize,
                 noProfile = result.NoProfile,
+                unreachable = result.Unreachable,
                 droppedKeys = result.DroppedKeys,
                 entries = result.Entries
                     .OrderByDescending(e => e.Ilvl)
@@ -388,10 +468,10 @@ public sealed class ConsoleApi(
         };
     }
 
-    private (int, string) InstallPull(string body)
+    private async Task<(int, string)> InstallPullAsync(string body)
     {
         var input = JsonSerializer.Deserialize<InstallInput>(body, Json) ?? new InstallInput();
-        var outcome = pulls.Install(input.Override ?? false);
+        var outcome = await pulls.InstallAsync(input.Override ?? false).ConfigureAwait(false);
 
         return (outcome.Ok ? 200 : 400, Serialize(new
         {
@@ -409,15 +489,64 @@ public sealed class ConsoleApi(
             return (501, Serialize(new { ok = false, error = "Checking is not wired up in this context." }));
         }
 
-        var result = await checkNow().ConfigureAwait(false);
-
-        return Ok(new
+        // Same shape of guard as the pull path: one at a time, refused rather than
+        // queued, so a held mouse button cannot fan out concurrent checks at one
+        // destination file and one ETag cache entry.
+        if (Interlocked.CompareExchange(ref _checking, 1, 0) != 0)
         {
-            ok = !result.IsFailure,
-            message = result.Message,
-            entries = result.Entries,
-            generatedAt = result.GeneratedAt,
-        });
+            return (409, Serialize(new { ok = false, error = "A check is already running." }));
+        }
+
+        Task<UpdateResult> running;
+        try
+        {
+            running = checkNow();
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _checking, 0);
+            throw;
+        }
+
+        try
+        {
+            var result = await running.WaitAsync(CheckTimeout).ConfigureAwait(false);
+
+            Interlocked.Exchange(ref _checking, 0);
+
+            return Ok(new
+            {
+                ok = !result.IsFailure,
+                message = result.Message,
+                entries = result.Entries,
+                generatedAt = result.GeneratedAt,
+            });
+        }
+        catch (TimeoutException)
+        {
+            Log.Warn($"a manual check did not finish within {CheckTimeout.TotalMinutes:0} minutes");
+
+            // WaitAsync stops US waiting; it does not stop the check. Holding the
+            // guard until the real task ends is the point of the guard - releasing it
+            // here would let the next click start the second concurrent check this
+            // exists to prevent. The continuation also observes a late fault.
+            _ = running.ContinueWith(
+                _ => Interlocked.Exchange(ref _checking, 0),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+
+            return (504, Serialize(new
+            {
+                ok = false,
+                error = "The check did not finish in time. It is still running; try again shortly.",
+            }));
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _checking, 0);
+            throw;
+        }
     }
 
     // ------------------------------------------------------------------

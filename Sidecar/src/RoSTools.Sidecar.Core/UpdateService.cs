@@ -97,7 +97,13 @@ public sealed class UpdateService
                 // reported a healthy roster over a destination this method had
                 // already decided it could not vouch for - and dereferenced a null
                 // cache entry doing it, on a first install.
-                if (!cacheUsable || state is null)
+                //
+                // Gate on the request that actually went out, not on the cache. With
+                // force == true and a usable cache, `unconditional` is true and no
+                // validators were sent, but `cacheUsable` was still true - so a 304
+                // fell through to AlreadyCurrent and silently defeated the user's
+                // explicit "check anyway".
+                if (unconditional || state is null)
                 {
                     return Record(Fail(
                         "The data source answered 304 to a request that carried no validators. " +
@@ -158,11 +164,16 @@ public sealed class UpdateService
                     $"kept the newer installed roster ({currentEpoch}); " +
                     $"the data source is offering an older one ({incomingEpoch}).");
 
+                // One read, not two. Validating twice in the same expression let a
+                // rewrite land between them, so Entries and GeneratedAt in the result
+                // could describe different versions of the file.
+                var installed = GuildDataValidator.Validate(destination);
+
                 return Record(new UpdateResult(
                     UpdateOutcome.AlreadyCurrent,
                     "Kept the roster already installed -- it is newer than the published one.",
-                    GuildDataValidator.Validate(destination).Entries,
-                    GuildDataValidator.Validate(destination).GeneratedAt,
+                    installed.Entries,
+                    installed.GeneratedAt,
                     now,
                     currentEpoch));
             }

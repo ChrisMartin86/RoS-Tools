@@ -81,16 +81,33 @@ function Util.NormalizeKey(text, fallbackRealmSlug)
   text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("^%s+", ""):gsub("%s+$", "")
   if text == "" then return nil end
 
+  -- Split on the FIRST "-" *before* touching the title, because the title
+  -- heuristic below is only safe on the name half. A realm display name can
+  -- contain whitespace ("Moon Guard"), so applying it to the whole string
+  -- took "Peidae-Moon Guard" apart as "Guard" and produced "Guard-khadgar".
+  local name, realm = text:match("^([^%-]+)%-(.+)$")
+  if not name then name = text end
+
   -- Drop a leading player title ("Brewmaster Peidae" -> "Peidae"). Character
-  -- names never contain whitespace, so if what's left has a space in it
-  -- (a displayed title prefix), the name is the last whitespace-delimited
+  -- names never contain whitespace, so if the name half has a space in it
+  -- (a displayed title prefix), the name is its last whitespace-delimited
   -- token. Tooltip headers are the caller that hits this; a mixin-driven
   -- name field never has a title baked in.
-  text = text:match("%S+$") or text
+  --
+  -- Trailing whitespace on the name half is tolerated ("Peidae -Moon Guard"
+  -- splits into "Peidae " and "Moon Guard"), so the token is taken with
+  -- "%s*$" after it. A bare "%S+$" simply failed to match such a half and
+  -- fell through to the untrimmed string, producing a key with a space in
+  -- it -- which no exported key ever has, so the lookup silently missed.
+  --
+  -- No empty check after this: `text` is non-empty and trimmed by the time
+  -- we get here, so the name half always starts with a non-space character
+  -- and neither the match nor the fallback can produce "". The guard that
+  -- used to sit here could not fire.
+  name = name:match("(%S+)%s*$") or name
 
-  local name, realm = text:match("^([^%-]+)%-(.+)$")
-  if not name then
-    return Util.MakeKey(text, fallbackRealmSlug)
+  if not realm then
+    return Util.MakeKey(name, fallbackRealmSlug)
   end
 
   return Util.MakeKey(name, Util.RealmToSlug(realm) or fallbackRealmSlug)

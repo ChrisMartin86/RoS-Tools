@@ -112,6 +112,21 @@ public static partial class GuildDataValidator
     /// <summary>Sync.lua's <c>MAX_CHUNKS * CHUNK_SIZE</c>: what one transfer can carry.</summary>
     private const int MaxExportBytes = 200 * 200;
 
+    /// <summary>
+    /// The largest download worth putting on disk at all, derived from
+    /// <see cref="MaxExportBytes"/>: a roster whose serialized form exceeds that is
+    /// refused here anyway, and the on-disk Lua that produces it runs to roughly
+    /// twice the export - eight times leaves generous headroom for formatting,
+    /// comments and the header.
+    /// <para>
+    /// This exists so <see cref="GuildDataClient"/> can stop early. Without a
+    /// ceiling on the wire, a mistyped <c>DataUrl</c> pointing at something large
+    /// wrote the whole thing into <c>%TEMP%</c> and then had it read into memory
+    /// (three times over, decoding) before the export-size rule below ever ran.
+    /// </para>
+    /// </summary>
+    public const int MaxRosterBytes = MaxExportBytes * 8;
+
     /// <summary>Sync.lua's <c>MAX_FUTURE</c>: tolerance for clock skew against the exporter.</summary>
     private const int MaxFutureSeconds = 300;
 
@@ -136,17 +151,20 @@ public static partial class GuildDataValidator
             return GuildDataValidation.Fail("file was never written");
         }
 
-        long bytes;
         byte[] raw;
         try
         {
-            bytes = new FileInfo(path).Length;
             raw = File.ReadAllBytes(path);
         }
         catch (Exception ex)
         {
             return GuildDataValidation.Fail($"could not be read: {ex.Message}");
         }
+
+        // The length of what was actually read, not a second stat() of the same path.
+        // Two reads can disagree - a download or a restore landing between them - and
+        // the size floor would then be judging bytes nothing else here ever sees.
+        var bytes = raw.LongLength;
 
         if (bytes < MinimumBytes)
         {
@@ -640,12 +658,36 @@ public static partial class GuildDataValidator
         return new ScanResult(meta, ilvls, null, Collapse(skeleton.ToString()));
     }
 
+    /// <summary>
+    /// Whitespace as Lua 5.1's lexer sees it: C <c>isspace</c>, which is ASCII-only.
+    /// <para>
+    /// <c>char.IsWhiteSpace</c> is Unicode-aware and matches U+00A0, U+2007 and
+    /// U+202F among others. Lua 5.1 does not: it meets byte <c>0xC2</c> and stops.
+    /// A file with a single non-breaking space used as a separator - one pasted
+    /// character name, one editor being clever - passed every shape check here,
+    /// installed, and then failed to compile in WoW. The symptom is not an error
+    /// message: <c>ns.GuildData</c> is simply nil, the client shows zero characters,
+    /// and because <c>Data:IdentityKey()</c> reads that same table it can never
+    /// adopt a peer snapshot again either.
+    /// </para>
+    /// <para>
+    /// This class already spells the hazard out for <see cref="SyncKeyShape"/> and
+    /// then reintroduced it in every walker below. Use this, never
+    /// <c>char.IsWhiteSpace</c>, when deciding what Lua would skip.
+    /// </para>
+    /// </summary>
+    private static bool IsLuaSpace(char c) =>
+        c is ' ' or '\t' or '\n' or '\v' or '\f' or '\r';
+
     /// <summary>Append to the skeleton, but only for content outside the inner tables.</summary>
     private static void Emit(StringBuilder skeleton, int depth, char c)
     {
         if (depth <= 1)
         {
-            skeleton.Append(char.IsWhiteSpace(c) ? ' ' : c);
+            // Anything Lua would not treat as whitespace is kept verbatim, so a
+            // non-breaking space out here lands in the skeleton and fails the
+            // comparison against ExpectedSkeleton rather than being normalised away.
+            skeleton.Append(IsLuaSpace(c) ? ' ' : c);
         }
     }
 
@@ -665,7 +707,7 @@ public static partial class GuildDataValidator
 
         foreach (var c in s)
         {
-            var isSpace = char.IsWhiteSpace(c);
+            var isSpace = IsLuaSpace(c);
             if (isSpace)
             {
                 if (!lastWasSpace && sb.Length > 0)
@@ -774,7 +816,9 @@ public static partial class GuildDataValidator
 
         while (i < body.Length)
         {
-            if (char.IsWhiteSpace(body[i]))
+            // IsLuaSpace, not char.IsWhiteSpace: skipping a non-breaking space here
+            // accepts a meta table Lua 5.1 cannot lex. See IsLuaSpace.
+            if (IsLuaSpace(body[i]))
             {
                 i++;
                 continue;
@@ -868,7 +912,9 @@ public static partial class GuildDataValidator
 
         while (i < body.Length)
         {
-            if (char.IsWhiteSpace(body[i]))
+            // IsLuaSpace, not char.IsWhiteSpace: a single non-breaking space between
+            // two entries is a file that validates, installs and then does not load.
+            if (IsLuaSpace(body[i]))
             {
                 i++;
                 continue;
@@ -978,12 +1024,26 @@ public static partial class GuildDataValidator
     /// <summary>
     /// <c>[^"\r\n]</c>, not <c>[^"]</c>: a newline inside the key would be accepted
     /// by the looser class and produce a file Lua cannot compile.
+    /// <para>
+    /// The gaps are <c>[ \t\n\v\f\r]</c> spelled out, not <c>\s</c>. .NET's <c>\s</c>
+    /// is Unicode-aware, so an entry separated by a non-breaking space rather than a
+    /// plain one matched here, passed every other check, and installed a file Lua 5.1
+    /// refuses to compile. See <see cref="IsLuaSpace"/>.
+    /// </para>
     /// </summary>
-    [GeneratedRegex(@"\[""([^""\r\n]*)""\]\s*=\s*(-?\d+)")]
+    [GeneratedRegex(@"\[""([^""\r\n]*)""\][ \t\n\v\f\r]*=[ \t\n\v\f\r]*(-?\d+)")]
     private static partial Regex EntryAt();
 
-    /// <summary>One <c>name = "string"</c> or <c>name = number</c> assignment in meta.</summary>
-    [GeneratedRegex(@"([A-Za-z_]\w*)\s*=\s*(?:""([^""\r\n]*)""|(-?\d+))")]
+    /// <summary>
+    /// One <c>name = "string"</c> or <c>name = number</c> assignment in meta.
+    /// <para>
+    /// Both the gaps and the identifier are spelled out in ASCII for the same reason
+    /// as <see cref="EntryAt"/>: <c>\s</c> and <c>\w</c> are both Unicode-aware in
+    /// .NET, so either would accept a meta table Lua cannot lex.
+    /// </para>
+    /// </summary>
+    [GeneratedRegex(
+        @"([A-Za-z_][A-Za-z0-9_]*)[ \t\n\v\f\r]*=[ \t\n\v\f\r]*(?:""([^""\r\n]*)""|(-?\d+))")]
     private static partial Regex MetaField();
 
     /// <summary>

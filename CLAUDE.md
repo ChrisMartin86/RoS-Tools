@@ -117,12 +117,41 @@ luacheck .
 
 ```powershell
 lua5.1 Tools/sync-harness.lua
+lua5.1 Tools/module-checks.lua
+lua5.1 Tools/events-missing-check.lua
 dotnet test .\Sidecar\RoSTools.Sidecar.sln
+python .\Tools\ops-checks.py
+pwsh -File .\Tools\release-selection.Tests.ps1
 ```
 
 `luacheck` is the only lint; there is no Lua unit-test framework, but
 `Tools/sync-harness.lua` runs the real `Core/*.lua` against a stubbed WoW API and
-must pass before any change to `Core/Sync.lua` is considered done. CI runs
+must pass before any change to `Core/Sync.lua` is considered done.
+`Tools/module-checks.lua` does the same for `Modules/*.lua`, stubbing the widget
+API (`CreateFrame`, `hooksecurefunc`, `CommunitiesMemberListEntryMixin`, font
+strings) so roster annotation, `/ros set` parsing and the browser list can be
+exercised offline. `Tools/ops-checks.py` covers the Python exporter and the
+comparer; `Tools/release-selection.Tests.ps1` lifts the pure helpers out of
+`scripts/Install-Sidecar.ps1` by AST and tests the release-selection and version
+arithmetic against the shipped code. All of them exit non-zero on failure.
+
+**A fix without a test that fails before it is not a fix.** Every harness here
+exists because something shipped broken and silent. When you add an assertion,
+revert the change and confirm the assertion actually goes red — a test that
+passes for the wrong reason is worse than no test, and this repo has shipped
+several.
+`Tools/events-missing-check.lua` covers the dispatch path in `Core/Events.lua`:
+it loads that file with `ns.Comm` deliberately absent and asserts the failure is
+*named once*, which is the regression that hid a truncated `Core/Comm.lua`.
+
+Neither harness compiles the addon, so run `luac5.1 -p` over every Lua file as
+well — a syntax error means the file never loads, `ns.Comm` / `ns.Sync` is never
+assigned, and the symptom is silence rather than a stack trace:
+
+```powershell
+Get-ChildItem -Recurse -Filter *.lua -Path Core, Modules, Data |
+    ForEach-Object { luac5.1 -p $_.FullName }
+``` CI runs
 luacheck and packages a zip excluding `.git*`, `build`, `Tools`, `scripts`,
 `Sidecar` and `*.md`.
 
@@ -265,10 +294,15 @@ The addon is unchanged by it and knows nothing about it.
   human click, with credentials that person supplied. Never wire `PullService`
   into the poller.
 - **It must never touch the WoW process.** No memory access, no injection, no
-  input automation, no enumerating `Wow.exe`. It opens exactly three paths under
-  `_retail_`: `Data\GuildData.lua`, its `.bak`, and nothing else. That line is
-  what separates a file updater from something Blizzard would action, and it is
-  the reason the design is defensible at all.
+  input automation, no enumerating `Wow.exe`. It opens exactly four paths under
+  `_retail_`, all of them the addon's own: `RoS-Tools.toc` (read only, to confirm
+  the folder really is RoS-Tools), `Data\GuildData.lua`, its `.bak` rollback
+  copy, and a `Data\GuildData.lua.new` staging file that exists only between
+  writing the bytes and renaming them into place — that fourth path is what makes
+  the replace an atomic same-volume rename rather than a cross-drive copy an
+  antivirus lock or a full disk can truncate. Nothing else. That line is what
+  separates a file updater from something Blizzard would action, and it is the
+  reason the design is defensible at all.
 - **Logic lives in `RoSTools.Sidecar.Core` (`net10.0`), UI in
   `RoSTools.Sidecar` (`net10.0-windows`).** The split exists so the test suite
   runs on `ubuntu-latest`; don't move testable logic into the WinForms project.

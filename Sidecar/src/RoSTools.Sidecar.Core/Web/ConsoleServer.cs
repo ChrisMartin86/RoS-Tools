@@ -20,6 +20,14 @@ namespace RoSTools.Sidecar.Core.Web;
 /// and write a file that propagates to the whole guild. Loopback is not an
 /// authorization boundary and is not treated as one here.
 /// </para>
+/// <para>
+/// Where the boundary actually is: at the user account. The token stops a process
+/// running as <i>another</i> user, and it stops a web page in the browser. It does
+/// not stop a process running as <i>this</i> user - that process can read the
+/// browser's command line, its <c>sessionStorage</c>, or this process's memory. See
+/// the bootstrap field below, which bounds and logs that exposure rather than
+/// pretending to remove it.
+/// </para>
 /// </summary>
 public sealed class ConsoleServer : IAsyncDisposable
 {
@@ -31,15 +39,35 @@ public sealed class ConsoleServer : IAsyncDisposable
     private readonly byte[] _tokenBytes;
 
     /// <summary>
-    /// A separate, single-use, short-lived token that only buys one load of the page.
+    /// A separate, single-use, short-lived token that buys exactly one load of the
+    /// page - which is served with the session token in its body.
     /// <para>
-    /// The session token cannot travel in the URL: <c>Process.Start</c> hands the URL
-    /// to the browser as a command-line argument, and any process running as this
-    /// user can read another's command line. That would give a local attacker the
-    /// session token - enough to force an install of a staged roster, which
-    /// <c>Core/Sync.lua</c> then spreads guild-wide. So the URL carries this instead,
-    /// the page trades it for the session token in the HTML body, and it is burned on
-    /// first use.
+    /// <b>What this is not.</b> It is not a defence against another process running as
+    /// this user. That process can read the browser's command line, win the race to
+    /// <c>GET /?t=...</c>, and take the session token straight out of the HTML - and
+    /// even if it could not, it could read the browser's <c>sessionStorage</c> off
+    /// disk, or read this process's memory. Same-user is inside the trust boundary
+    /// here, and no token scheme moves it out; only running the sidecar as a different
+    /// principal would. An earlier version of this comment claimed the bootstrap
+    /// stopped a command-line reader from getting the session token. It does not, and
+    /// saying so was worse than saying nothing, because it made the real boundary look
+    /// like it had been handled.
+    /// </para>
+    /// <para>
+    /// <b>What it does buy,</b> and why it is still here. The session token never
+    /// appears in a URL, so it never lands anywhere a URL lands and outlives the
+    /// session: browser history, a shell's history, a parent process's saved command
+    /// line, EDR telemetry, a crash dump of the address bar. What does land there is a
+    /// bootstrap that is dead after one use and after five minutes, so a link
+    /// recovered from any of those later is inert. It bounds the window to the seconds
+    /// between <c>Process.Start</c> and the browser's first request; it does not close
+    /// it.
+    /// </para>
+    /// <para>
+    /// <b>And it is now auditable.</b> Every redemption and every refused redemption is
+    /// logged. A maintainer who saw "That link has already been used" can look in the
+    /// log and find the redemption they did not make, with its timestamp - which is the
+    /// difference between a silent compromise and a visible one.
     /// </para>
     /// </summary>
     private readonly Lock _bootstrapGate = new();
@@ -50,12 +78,35 @@ public sealed class ConsoleServer : IAsyncDisposable
     private readonly ConsoleApi _api;
     private readonly CancellationTokenSource _stopping = new();
 
+    /// <summary>
+    /// Taken once, from a source that is alive at the time.
+    /// <para>
+    /// Every request handler passes this into <see cref="ConsoleApi"/> and on into a
+    /// pull. Reading <c>_stopping.Token</c> at request time meant reading a property of
+    /// an object <see cref="DisposeAsync"/> may already have disposed, which throws -
+    /// and it would throw inside <c>PullService.PullAsync</c> at the one statement that
+    /// sits OUTSIDE the try owning the ticket-releasing finally, leaving the pull slot
+    /// claimed for the life of the process. A token read before the disposal cannot.
+    /// </para>
+    /// </summary>
+    private readonly CancellationToken _stoppingToken;
+
+    /// <summary>
+    /// The fire-and-forget request handlers that have not finished yet, so shutdown
+    /// can wait for them instead of pulling the cancellation source out from under
+    /// them. Pruned on every add; the console serves one browser tab, so this never
+    /// holds more than a handful.
+    /// </summary>
+    private readonly Lock _inFlightGate = new();
+    private readonly List<Task> _inFlight = [];
+
     private Task? _loop;
     private bool _disposed;
 
     public ConsoleServer(ConsoleApi api, int preferredPort = 0)
     {
         _api = api;
+        _stoppingToken = _stopping.Token;
 
         Token = Base64Url(RandomNumberGenerator.GetBytes(32));
         _tokenBytes = Encoding.ASCII.GetBytes(Token);
@@ -86,8 +137,17 @@ public sealed class ConsoleServer : IAsyncDisposable
         }
     }
 
-    /// <summary>True exactly once per issued bootstrap token, and only inside its
-    /// five-minute window.</summary>
+    /// <summary>
+    /// True exactly once per issued bootstrap token, and only inside its five-minute
+    /// window.
+    /// <para>
+    /// Every outcome is logged, success and failure alike. The session token is handed
+    /// out on the success path, so this is the only record that it left the process at
+    /// all; without it, a bootstrap intercepted by another local process produced
+    /// exactly one visible symptom - "That link has already been used" - and no
+    /// evidence anywhere of who used it.
+    /// </para>
+    /// </summary>
     private bool BurnBootstrap(string? supplied)
     {
         if (supplied is null)
@@ -97,8 +157,17 @@ public sealed class ConsoleServer : IAsyncDisposable
 
         lock (_bootstrapGate)
         {
-            if (_bootstrap is null || DateTimeOffset.UtcNow > _bootstrapExpires)
+            if (_bootstrap is null)
             {
+                Log.Warn(
+                    "console bootstrap refused: no link is outstanding. If you did not just " +
+                    "reopen the console, this link was already redeemed by something else.");
+                return false;
+            }
+
+            if (DateTimeOffset.UtcNow > _bootstrapExpires)
+            {
+                Log.Warn("console bootstrap refused: the link expired.");
                 return false;
             }
 
@@ -108,10 +177,16 @@ public sealed class ConsoleServer : IAsyncDisposable
             if (actual.Length != expected.Length ||
                 !CryptographicOperations.FixedTimeEquals(actual, expected))
             {
+                Log.Warn("console bootstrap refused: the link did not match the outstanding one.");
                 return false;
             }
 
             _bootstrap = null;
+
+            // The session token goes out in the response this authorises. Whoever
+            // redeemed it holds full /api/pull and /api/install access until the app
+            // restarts, so the redemption itself is the event worth recording.
+            Log.Info("console bootstrap redeemed; the session token was served to that request.");
             return true;
         }
     }
@@ -178,14 +253,14 @@ public sealed class ConsoleServer : IAsyncDisposable
 
     private async Task AcceptLoopAsync()
     {
-        while (!_stopping.IsCancellationRequested)
+        while (!_stoppingToken.IsCancellationRequested)
         {
             HttpListenerContext context;
             try
             {
                 context = await _listener.GetContextAsync().ConfigureAwait(false);
             }
-            catch (Exception) when (_stopping.IsCancellationRequested || !_listener.IsListening)
+            catch (Exception) when (_stoppingToken.IsCancellationRequested || !_listener.IsListening)
             {
                 return;
             }
@@ -195,9 +270,20 @@ public sealed class ConsoleServer : IAsyncDisposable
                 continue;
             }
 
-            // Fire and forget: one slow pull must not stop the console answering
-            // /api/pull for progress. Every path inside is wrapped.
-            _ = Task.Run(() => HandleSafelyAsync(context));
+            // Fire and forget for the accept loop, but not for shutdown: one slow
+            // pull must not stop the console answering /api/pull for progress, and
+            // equally it must not still be holding the cancellation source when
+            // DisposeAsync reaches for it. Every path inside is wrapped.
+            Track(Task.Run(() => HandleSafelyAsync(context)));
+        }
+    }
+
+    private void Track(Task handler)
+    {
+        lock (_inFlightGate)
+        {
+            _inFlight.RemoveAll(task => task.IsCompleted);
+            _inFlight.Add(handler);
         }
     }
 
@@ -210,15 +296,56 @@ public sealed class ConsoleServer : IAsyncDisposable
         catch (Exception ex)
         {
             Log.Warn($"console request failed: {ex.Message}");
+            FailAndClose(context.Response);
+        }
+    }
 
+    private static void FailAndClose(HttpListenerResponse response) =>
+        FailAndClose(() => response.StatusCode = 500, response.Close, response.Abort);
+
+    /// <summary>
+    /// Ends a request that blew up mid-flight, and always ends it.
+    /// <para>
+    /// Three separate attempts, deliberately. When the handler threw AFTER
+    /// <c>WriteAsync</c> had already sent headers, setting <c>StatusCode</c> throws
+    /// <see cref="InvalidOperationException"/> - and one shared <c>catch</c> swallowed
+    /// that without ever reaching <c>Close()</c>, leaking the connection until HTTP.sys
+    /// timed it out. Whatever happens to the status code, the response gets closed.
+    /// </para>
+    /// <para>
+    /// Taken as delegates rather than a response so the ordering can be tested at all.
+    /// The failure it exists for is HTTP.sys's, and .NET's managed
+    /// <see cref="HttpListener"/> - which is what runs on the Linux CI box - lets a
+    /// post-write status assignment through without complaint, so no real response
+    /// object can be put in the state that matters here.
+    /// </para>
+    /// </summary>
+    internal static void FailAndClose(Action setStatus, Action close, Action abort)
+    {
+        try
+        {
+            setStatus();
+        }
+        catch (Exception)
+        {
+            // Headers are already on the wire; the status is no longer ours to set.
+        }
+
+        try
+        {
+            close();
+        }
+        catch (Exception)
+        {
+            // Close itself can throw on a half-written response. Abort is the last
+            // resort, and it always frees the connection.
             try
             {
-                context.Response.StatusCode = 500;
-                context.Response.Close();
+                abort();
             }
-            catch
+            catch (Exception)
             {
-                // The client hung up. Nothing to do and nothing to report.
+                // The client hung up. Nothing left to do and nothing to report.
             }
         }
     }
@@ -307,7 +434,7 @@ public sealed class ConsoleServer : IAsyncDisposable
 
         var (status, json) = await _api
             .HandleAsync(path, request.HttpMethod, await ReadBodyAsync(request).ConfigureAwait(false),
-                _stopping.Token)
+                _stoppingToken)
             .ConfigureAwait(false);
 
         await WriteAsync(response, status, "application/json; charset=utf-8", json).ConfigureAwait(false);
@@ -438,7 +565,7 @@ public sealed class ConsoleServer : IAsyncDisposable
         {
             try
             {
-                await _loop.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+                await _loop.WaitAsync(Patience).ConfigureAwait(false);
             }
             catch (Exception)
             {
@@ -447,7 +574,55 @@ public sealed class ConsoleServer : IAsyncDisposable
             }
         }
 
-        _stopping.Dispose();
+        // Handlers are started and not awaited, and each one holds _stoppingToken and
+        // hands it to ConsoleApi and on to a pull. Disposing the source while one is
+        // still in flight is a race whose losing side throws ObjectDisposedException
+        // at a point PullAsync does not guard, leaving the pull slot claimed for the
+        // life of the process and every later pull answered "already running". So wait
+        // for them - and if they will not finish, leave the source undisposed. An
+        // undisposed CancellationTokenSource at shutdown costs one finalizable object;
+        // the alternative costs the feature.
+        if (await DrainAsync(Patience).ConfigureAwait(false))
+        {
+            _stopping.Dispose();
+        }
+        else
+        {
+            Log.Warn(
+                "console requests were still running at shutdown, so the console's " +
+                "cancellation source was left undisposed rather than pulled out from under them.");
+        }
+    }
+
+    /// <summary>How long shutdown waits, for the accept loop and again for the
+    /// handlers still in flight behind it.</summary>
+    private static readonly TimeSpan Patience = TimeSpan.FromSeconds(2);
+
+    private async Task<bool> DrainAsync(TimeSpan patience)
+    {
+        Task[] pending;
+
+        lock (_inFlightGate)
+        {
+            pending = _inFlight.Where(task => !task.IsCompleted).ToArray();
+        }
+
+        if (pending.Length == 0)
+        {
+            return true;
+        }
+
+        try
+        {
+            // HandleSafelyAsync swallows everything, so WhenAll only ever faults if
+            // the pool could not run one - and that is still a reason not to dispose.
+            await Task.WhenAll(pending).WaitAsync(patience).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     private static string Base64Url(byte[] value) =>

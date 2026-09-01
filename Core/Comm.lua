@@ -30,6 +30,7 @@ local EQUIP_DEBOUNCE     = 2    -- seconds to coalesce PLAYER_EQUIPMENT_CHANGED 
 local lastBroadcastIlvl = nil
 local lastBroadcastAt   = 0
 local debouncePending   = false
+local cooldownPending   = false
 
 -- ------------------------------------------------------------------
 -- Lifecycle -- called explicitly from Core/Events.lua, each call wrapped
@@ -71,8 +72,22 @@ local function broadcastIfChanged()
 
   local now = GetTime()
   if lastBroadcastAt > 0 and (now - lastBroadcastAt) < BROADCAST_COOLDOWN then
-    ns.Debug(("comm: suppressed broadcast, %ds left on cooldown"):format(
-      math.ceil(BROADCAST_COOLDOWN - (now - lastBroadcastAt))))
+    -- DEFER, never drop. PLAYER_EQUIPMENT_CHANGED is the only thing that
+    -- brings us back here, so a real upgrade that lands inside the cooldown
+    -- would otherwise never be broadcast at all -- the guild would keep
+    -- seeing the pre-upgrade number for the rest of the session.
+    local remaining = BROADCAST_COOLDOWN - (now - lastBroadcastAt)
+    ns.Debug(("comm: deferred broadcast, %ds left on cooldown"):format(math.ceil(remaining)))
+    -- C_Timer.After cannot be cancelled, so one retry at a time: a full gear
+    -- swap inside the window would otherwise arm a timer per slot and fire a
+    -- burst of identical sends the instant the cooldown lifts.
+    if not cooldownPending then
+      cooldownPending = true
+      C_Timer.After(remaining + 0.1, function()
+        cooldownPending = false
+        broadcastIfChanged()
+      end)
+    end
     return
   end
 
@@ -115,4 +130,4 @@ function Comm:HandleAddonMessage(prefix, message, channel, sender)
 
   ns.Data:ApplyLiveUpdate(senderKey, math.floor(ilvl))
   ns.Debug(("comm: accepted %s = %d"):format(senderKey, math.floor(ilvl)))
-en
+end
