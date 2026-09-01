@@ -13,9 +13,19 @@ public sealed class BlizzardStub : HttpMessageHandler
     private readonly Dictionary<string, int?> _ilvls = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<(string Name, string Realm, int Level)> _members = [];
 
-    public int RosterCalls { get; private set; }
+    private int _rosterCalls;
 
-    public int CharacterCalls { get; private set; }
+    private int _characterCalls;
+
+    // PullService fans character requests out with real concurrency
+    // (Parallel.ForEachAsync, MaxDegreeOfParallelism = Workers), so these
+    // counters are incremented from multiple threads at once. A plain `int++`
+    // is a non-atomic read-modify-write and loses updates under genuine
+    // concurrency -- it stayed correct in quick local runs and undercounted
+    // on a busier CI runner. Interlocked keeps every call counted.
+    public int RosterCalls => _rosterCalls;
+
+    public int CharacterCalls => _characterCalls;
 
     /// <summary>Status codes to answer character requests with before succeeding,
     /// one per queued entry. Used to exercise the retry path.</summary>
@@ -25,7 +35,9 @@ public sealed class BlizzardStub : HttpMessageHandler
 
     public HttpStatusCode RosterStatus { get; set; } = HttpStatusCode.OK;
 
-    public int TokenCalls { get; private set; }
+    private int _tokenCalls;
+
+    public int TokenCalls => _tokenCalls;
 
     /// <summary>Status codes to answer the token request with before succeeding, one
     /// per queued entry. The token POST is the one request that used to have no
@@ -77,7 +89,7 @@ public sealed class BlizzardStub : HttpMessageHandler
 
         if (url.Host == "oauth.battle.net")
         {
-            TokenCalls++;
+            Interlocked.Increment(ref _tokenCalls);
 
             if (TokenFailures.Count > 0)
             {
@@ -91,7 +103,7 @@ public sealed class BlizzardStub : HttpMessageHandler
 
         if (url.AbsolutePath.EndsWith("/roster", StringComparison.Ordinal))
         {
-            RosterCalls++;
+            Interlocked.Increment(ref _rosterCalls);
             RosterReached.TrySetResult();
 
             if (BeforeRoster is { } hold)
@@ -114,7 +126,7 @@ public sealed class BlizzardStub : HttpMessageHandler
 
         if (url.AbsolutePath.Contains("/profile/wow/character/", StringComparison.Ordinal))
         {
-            CharacterCalls++;
+            Interlocked.Increment(ref _characterCalls);
 
             if (CharacterFailures.Count > 0)
             {
