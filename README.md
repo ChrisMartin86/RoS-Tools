@@ -58,6 +58,49 @@ nothing to re-run. Settings live under `WTF\` and survive every upgrade.
 
 ---
 
+## Installing the sidecar
+
+Maintainers only — see [The sidecar](#the-sidecar--maintainers-only) below for
+who actually needs this. Guildmates get current data through the addon alone
+and never need to touch this section.
+
+One line in PowerShell — Windows PowerShell 5.1 or PowerShell 7, either works:
+
+```powershell
+irm https://raw.githubusercontent.com/ChrisMartin86/RoS-Tools/main/scripts/Install-Sidecar.ps1 | iex
+```
+
+The same line installs it and updates it later: it picks the newest release,
+stops if you're already current, verifies the download against the release's
+SHA-256 checksum, then swaps the exe in and restarts it. Run it once and let it
+start with Windows from then on.
+
+Requirements: Windows, and the addon already installed via CurseForge — the
+sidecar refreshes the roster inside RoS-Tools, it doesn't install the addon
+itself. No .NET runtime needed; the exe is self-contained.
+
+**Windows will warn you the first time** — the build is unsigned, so SmartScreen
+shows *"Windows protected your PC"*. Click **More info**, then **Run anyway**.
+
+Prefer to install by hand? Download `RoSToolsSidecar-<version>-win-x64.exe` from
+the [latest sidecar release](https://github.com/ChrisMartin86/RoS-Tools/releases),
+put it somewhere it can live, and run it — it finds your WoW install on its own.
+
+Knobs for the installer script (`iex` leaves no way to pass parameters, so these
+are environment variables):
+
+| Variable | Effect |
+| --- | --- |
+| `ROSTOOLS_SIDECAR_PATH` | Where to install. Default: wherever it already runs from, else the start-with-Windows entry, else `%LOCALAPPDATA%\RoS-Tools` |
+| `ROSTOOLS_SIDECAR_VERSION` | Pin a version, e.g. `1.2.0`. A pin may move you backwards |
+| `ROSTOOLS_SIDECAR_FORCE` | Reinstall even if the version already matches |
+| `ROSTOOLS_SIDECAR_NOSTART` | Do not launch it afterward |
+
+Tray menu, the data console, what it writes to disk, and how to remove it:
+**[Sidecar/README.md](Sidecar/README.md)**.
+
+---
+
 ## Commands
 
 | Command | Effect |
@@ -190,15 +233,8 @@ scheduled runs.
 
 **It is meant for one or two people — the maintainer and the guild leader.**
 Handing it out guild-wide buys nothing; everyone else gets the same data through
-sync, one hop later. Install and update it with one line in PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/ChrisMartin86/RoS-Tools/main/scripts/Install-Sidecar.ps1 | iex
-```
-
-The same line does both — it stops if you are already current, verifies the
-download against the release checksum, and restarts the app afterward. Run it
-once, then let the app start with Windows.
+sync, one hop later. Install instructions:
+[Installing the sidecar](#installing-the-sidecar).
 
 It never touches the game process, and refuses to install anything that does not
 validate as a real export. Full details:
@@ -300,6 +336,59 @@ Notes for anyone extending this:
 - `Modules/Roster.lua` touches Blizzard's Communities UI, which is unstable
   across patches. It searches for the name font string rather than assuming a
   widget path, and no-ops if it can't find one.
+
+---
+
+## Releasing
+
+Two independent release pipelines, both manual — nothing ships from a push to
+`main`.
+
+### Addon — CurseForge
+
+`.github/workflows/release.yml` ("Publish to CurseForge") is dispatch-only:
+
+1. Bump `## Version:` in `RoS-Tools.toc`.
+2. Add a matching `## <version>` section to `CHANGELOG.md` -- the workflow reads
+   that section as the CurseForge changelog and fails if it's missing.
+3. Commit and push those two changes to `main`.
+4. Run the workflow: Actions tab → **Publish to CurseForge** → **Run workflow**,
+   or from the CLI:
+
+```powershell
+gh workflow run release.yml -f release_type=release
+```
+
+`release_type` is `release`, `beta`, or `alpha`. `game_versions` overrides the
+CurseForge game versions that `## Interface:` would otherwise derive — leave it
+blank normally. `dry_run` builds and validates the zip without uploading.
+
+It pulls the freshest `Data/GuildData.lua` from the `guild-data` branch at build
+time (falling back to whatever's committed on `main` if that copy is actually
+newer), packages the zip, and uploads it. Requires the `CURSEFORGE_TOKEN` secret
+and the `CURSEFORGE_PROJECT_ID` repository variable.
+
+The addon carries no version tag — `RoS-Tools.toc` is the source of truth, and a
+release is just this workflow run.
+
+### Sidecar — GitHub Release
+
+`.github/workflows/sidecar.yml` builds and tests on every push to `main` and every
+PR touching `Sidecar/**`, but only **publishes** on a `sidecar-vX.Y.Z` tag:
+
+```powershell
+git tag sidecar-v1.1.0
+git push origin sidecar-v1.1.0
+```
+
+That builds a self-contained, single-file `win-x64` exe, checksums it, and
+attaches both to a new GitHub Release named after the tag — the release body
+includes the install one-liner. The sidecar's version is independent of the
+addon's; don't try to keep them in sync.
+
+The build is unsigned, so every release triggers a SmartScreen warning on first
+run. Signing is wired up but commented out in the workflow — add the Azure
+Trusted Signing secrets and uncomment the `Sign` step to turn it on.
 
 ---
 
