@@ -17,6 +17,23 @@ ns.Util = Util
 local RIGHT_SQUOTE = "\226\128\153"
 
 -- ------------------------------------------------------------------
+-- Secret values (12.0)
+-- ------------------------------------------------------------------
+-- Blizzard now hands tainted addon code "secret" strings for things like
+-- tooltip unit GUIDs. A secret may be stored and passed around, but
+-- indexing it, comparing it, or using it as a table key raises an error
+-- on the spot -- which is how `guid:find("^Player%-")` blew up 639 times
+-- in one Hyjal pull. `issecretvalue` does not exist before 12.0, so
+-- resolve it once and degrade to "nothing is secret" on older clients.
+local issecretvalue = _G.issecretvalue
+
+--- True when `v` is a secret value this addon must not inspect.
+function Util.IsSecret(v)
+  if not issecretvalue then return false end
+  return issecretvalue(v) == true
+end
+
+-- ------------------------------------------------------------------
 -- Realms whose slug cannot be derived mechanically. Keys are the
 -- lowercased, punctuation-stripped, space-stripped display name.
 -- ------------------------------------------------------------------
@@ -34,6 +51,7 @@ local SLUG_OVERRIDES = {
 --- @param realm string|nil
 --- @return string|nil
 function Util.RealmToSlug(realm)
+  if Util.IsSecret(realm) then return nil end
   if type(realm) ~= "string" or realm == "" then return nil end
 
   -- Apostrophes are dropped in the slug AND suppress the word boundary:
@@ -67,7 +85,11 @@ end
 
 --- Build a lookup key from a character name and realm slug.
 function Util.MakeKey(name, realmSlug)
+  -- A secret can never be a lookup key: using one as a table key is itself
+  -- an error, so it is rejected here rather than at every call site.
+  if Util.IsSecret(name) then return nil end
   if type(name) ~= "string" or name == "" then return nil end
+  if Util.IsSecret(realmSlug) then return name end
   if type(realmSlug) ~= "string" or realmSlug == "" then return name end
   return name .. "-" .. realmSlug
 end
@@ -75,6 +97,7 @@ end
 --- Split "Name-Realm" (or bare "Name") into a normalized key.
 --- Falls back to the player's own realm when none is present.
 function Util.NormalizeKey(text, fallbackRealmSlug)
+  if Util.IsSecret(text) then return nil end
   if type(text) ~= "string" or text == "" then return nil end
 
   -- Strip any leading color escape and trailing whitespace.

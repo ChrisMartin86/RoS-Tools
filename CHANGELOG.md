@@ -89,6 +89,29 @@
 
 ### Fixed
 
+- **Every unit tooltip threw a Lua error in Mt. Hyjal on 12.0 clients.**
+  Blizzard's new "secret values" hand tainted addon code a unit GUID that may
+  be stored and passed around but not indexed, compared, or used as a table
+  key. The tooltip hook ran `guid:find("^Player%-")` on it, which errors on the
+  spot -- 639 times in one pull, once per tooltip refresh. Secret GUIDs and
+  secret tooltip headers are now detected with `issecretvalue` and stepped
+  over, so the item level still resolves through the unit token behind the
+  tooltip and pre-12.0 clients are unaffected. `Tools/tooltip-checks.lua` is
+  the new regression harness.
+
+- **The same class of crash, everywhere else a secret could get in.** A secret
+  reports `type() == "string"`, so every pre-existing type check waved one
+  through -- and the comparison against `""` on the very next line is itself an
+  error on a secret. `Util.MakeKey`, `Util.NormalizeKey` and `Util.RealmToSlug`
+  now reject one up front, which covers the addon-message sender in
+  `Core/Comm.lua` and the guild roster names in `Core/Sync.lua` without either
+  file changing. `Modules/Roster.lua` guards `memberInfo.name` and every
+  `FontString:GetText()` it reads -- it walks all of a row's regions, so a
+  secret another addon put on one of them used to cost the row its annotation
+  (silently: the walk is already `pcall`-wrapped). `Core/Data.lua` guards the
+  name returned by `UnitName`, which Blizzard documents as secret for
+  non-player and pet units in combat.
+
 _A full-codebase audit on 2026-08-31 found the following. Each one now has a
 regression test that fails without its fix; the audit itself is kept in
 `AUDIT-2026-08-31.md`._

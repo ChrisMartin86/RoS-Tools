@@ -448,6 +448,10 @@ end
 function Data:GetForUnit(unit)
   if not unit or not UnitExists(unit) or not UnitIsPlayer(unit) then return nil end
   local name, realm = UnitName(unit)
+  -- UnitName is documented as returning secrets for non-player and pet units
+  -- in combat. UnitIsPlayer above should already have excluded those, but the
+  -- comparison on the next line errors outright if it did not.
+  if ns.Util.IsSecret(name) then return nil end
   if not name or name == "" then return nil end
   local slug = (realm and realm ~= "" and ns.Util.RealmToSlug(realm)) or ns.playerRealmSlug
   local key = ns.Util.MakeKey(name, slug)
@@ -457,7 +461,12 @@ end
 --- Look up by GUID, which is what the modern tooltip API hands us.
 function Data:GetForGUID(guid)
   if type(guid) ~= "string" then return nil end
+  -- A secret GUID resolves to secret name/realm strings, which explode the
+  -- moment we build a table key out of them. Callers fall back to the unit
+  -- token or the tooltip header.
+  if ns.Util.IsSecret(guid) then return nil end
   local _, _, _, _, _, name, realm = GetPlayerInfoByGUID(guid)
+  if ns.Util.IsSecret(name) then return nil end
   if not name or name == "" then return nil end
   local slug = (realm and realm ~= "" and ns.Util.RealmToSlug(realm)) or ns.playerRealmSlug
   local key = ns.Util.MakeKey(name, slug)

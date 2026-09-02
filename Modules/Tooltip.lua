@@ -98,8 +98,10 @@ local function onUnitTooltip(tooltip, data)
   -- the header fallback below will happily manufacture a key out of the last
   -- word of an NPC's name ("Auction House Resident" -> "Resident-<realm>"),
   -- burning a lookup and a debug line on something that can never match.
+  -- A secret GUID cannot be pattern-matched or resolved to a name, so
+  -- skip straight to the unit-token path rather than erroring on it.
   local guid = data and data.guid
-  if guid then
+  if guid and not ns.Util.IsSecret(guid) then
     if not guid:find("^Player%-") then return end
     ilvl, key = ns.Data:GetForGUID(guid)
   end
@@ -117,7 +119,7 @@ local function onUnitTooltip(tooltip, data)
   if not ilvl and not key then
     local left = _G["GameTooltipTextLeft1"]
     local text = left and left:GetText()
-    if text then
+    if text and not ns.Util.IsSecret(text) then
       key  = ns.Util.NormalizeKey(text, ns.playerRealmSlug)
       ilvl = key and ns.Data:GetByKey(key)
     end

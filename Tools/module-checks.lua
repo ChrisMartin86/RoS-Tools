@@ -64,6 +64,36 @@ local function occurrences(text, needle)
   end
 end
 
+-- ---------- secret values (12.0) ----------
+-- A real secret cannot be built in plain Lua, so it is modelled as a table
+-- that raises on ANY access, plus a matching `issecretvalue` in the addon
+-- environment. That is stricter than the client -- if the code touches one
+-- at all, the harness fails loudly rather than quietly returning nil.
+local SECRETS = setmetatable({}, { __mode = "k" })
+
+--- A secret that is a REAL Lua string. `type()` reports "string" for a secret
+--- in game, so every pre-existing `type(x) ~= "string"` check waves one
+--- through -- and a table stand-in would be stopped by that check instead of
+--- by the guard, making the assertion pass for the wrong reason. Plain Lua
+--- cannot make indexing or comparing this error, so what it proves is the
+--- other half: the guard, not the type check, is what returns nil.
+local function markSecret(str)
+  SECRETS[str] = true
+  return str
+end
+
+--- A secret that raises on ANY access. Stricter than the client, and the
+--- right fixture wherever the point is that the code never touches it.
+local function newSecret(what)
+  local boom = function() error("touched a secret value (" .. what .. ")", 2) end
+  local s = setmetatable({}, {
+    __index = boom, __newindex = boom, __call = boom,
+    __len = boom, __concat = boom, __tostring = boom,
+  })
+  SECRETS[s] = true
+  return s
+end
+
 -- ---------- widget stubs ----------
 
 --- A universal no-op: callable, and indexable back into itself. Widget code
@@ -170,6 +200,9 @@ local function newAddon(ilvls, opts)
   env.UnitExists = function() return false end
   env.UnitIsPlayer = function() return false end
   env.GetPlayerInfoByGUID = function() return nil end
+
+  -- The 12.0 secret-value detector. See section 10.
+  env.issecretvalue = function(v) return SECRETS[v] == true end
 
   -- Nothing creates a frame at load or enable time. Roster:OnEnable does,
   -- but only via the load-on-demand waiter it falls back to when the mixin
@@ -703,6 +736,81 @@ local noneStatus = none.created[1].status
 check("EMPTY ROSTER: the status line says so instead of quoting statistics",
       noneStatus:GetText() == "No data loaded.", show(noneStatus:GetText()))
 check("and no row is left showing", none.rows()[1]:IsShown() == false)
+
+-- ==================================================================
+section("10. secret values (12.0) must not reach the string helpers")
+-- Blizzard hands tainted code secret strings that may be stored and passed
+-- but not indexed, compared, or used as a table key. `type()` still reports
+-- "string", so every pre-existing type check is NOT a guard. The tooltip
+-- crash of 2026-09-01 is covered in Tools/tooltip-checks.lua; these are the
+-- other paths a secret can enter by.
+-- ==================================================================
+-- Roster.lua pcall-wraps its own annotate(), so a secret that reaches the
+-- string helpers there does NOT surface as a Lua error -- it is swallowed and
+-- logged. Debug is therefore on for this section, and "annotate failed" in the
+-- log is the failure signal that a thrown error would otherwise hide.
+local OTHER_KEY = "Zulgar-khadgar"
+local sec = newAddon({ [KEY] = 620, [OTHER_KEY] = 615 }, { debug = true })
+local U = sec.ns.Util
+local function noSwallowedError(label)
+  check(label, not sec.saidHas("annotate failed"))
+end
+
+check("Util.IsSecret sees through the type check",
+      U.IsSecret(markSecret("Peidae-Khadgar!secret")) == true
+      and U.IsSecret("Peidae") == false)
+
+-- These all sit one line above a comparison against "", which is itself an
+-- error on a secret. The fixture is a real string, so ONLY the IsSecret guard
+-- can produce nil here -- the type check cannot.
+check("MakeKey refuses a secret name",
+      U.MakeKey(markSecret("Nameish!secret"), "khadgar") == nil)
+check("MakeKey ignores a secret realm rather than keying on it",
+      U.MakeKey("Peidae", markSecret("realmish!secret")) == "Peidae")
+check("NormalizeKey refuses a secret",
+      U.NormalizeKey(markSecret("Peidae-Moon Guard!secret"), "khadgar") == nil)
+check("RealmToSlug refuses a secret",
+      U.RealmToSlug(markSecret("Moon Guard!secret")) == nil)
+
+-- Guild roster names (Core/Sync.lua) and addon-message senders (Core/Comm.lua)
+-- both reach NormalizeKey directly; the guard above is what covers them.
+check("a secret sender name yields no key rather than a bogus one",
+      U.NormalizeKey(markSecret("Impostor-Khadgar!secret"), "khadgar") == nil)
+
+-- memberInfo.name off a Communities row. A real string that resolves to a
+-- member we DO have data for, so an unguarded build annotates the row from a
+-- value it is not allowed to read -- which is what this catches.
+local zulgarFs = newFontString("Zulgar-Khadgar")
+local secretRow = newEntry({ name = markSecret("Zulgar-Khadgar") }, { zulgarFs })
+sec.mixin.UpdateNameFrame(secretRow)
+check("a secret memberInfo.name annotates nothing",
+      suffixCount(zulgarFs:GetText()) == 0, show(zulgarFs:GetText()))
+
+-- From here the fixture is the strict one: values the code must never touch.
+--
+-- findNameFontString reads EVERY region on the row, so one region another
+-- addon has put a secret on must not take the row down with it.
+local poisoned = newFontString("Peidae-Khadgar")
+local decoy = newFontString(newSecret("someone else's fontstring"))
+sec.mixin.UpdateNameFrame(newEntry(MEMBER, { decoy, poisoned }))
+check("a secret region does not stop the walk: the name row is annotated",
+      suffixCount(poisoned:GetText()) == 1, show(poisoned:GetText()))
+noSwallowedError("and the walk did not throw")
+
+-- The name row itself holding a secret: no readable base to append to, so the
+-- only correct move is to leave it alone. Annotate it normally first, so the
+-- memo's cheap-exit comparison (st.fs:GetText() == st.text) is the code that
+-- meets the secret rather than the fresh path.
+local nameFs = newFontString("Peidae-Khadgar")
+local nameRow = newEntry(MEMBER, { nameFs })
+sec.mixin.UpdateNameFrame(nameRow)
+check("baseline: the row was annotated", suffixCount(nameFs:GetText()) == 1,
+      show(nameFs:GetText()))
+nameFs:SetText(newSecret("name row, rewritten"))
+sec.mixin.UpdateNameFrame(nameRow)
+noSwallowedError("a name row rewritten with a secret does not throw")
+check("and the secret was left on the widget untouched",
+      U.IsSecret(nameFs:GetText()) == true)
 
 print(("\n== %d passed, %d failed ==\n"):format(pass, fail))
 os.exit(fail == 0 and 0 or 1)

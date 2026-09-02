@@ -56,6 +56,7 @@ end
 --- below, on purpose: a suffix written before the user toggled colorByIlvl
 --- is still ours, and a suffix we fail to remove is a suffix we double.
 local function stripOwnSuffix(text)
+  if ns.Util.IsSecret(text) then return nil end
   if not text then return text end
   return (text:gsub(SUFFIX_PATTERN, function(whole, hex, _)
     if isOwnColor(hex) then return "" end
@@ -74,6 +75,7 @@ end
 --- already-annotated row scores rank 4 instead of rank 3 -- it is still
 --- found, and stripOwnSuffix still cleans it up.
 local function stripCurrentSuffix(text)
+  if ns.Util.IsSecret(text) then return nil end
   if not text then return text end
   return (text:gsub(SUFFIX_PATTERN, function(whole, hex, digits)
     local want = ns.ColorForIlvl(tonumber(digits) or -1)
@@ -88,6 +90,7 @@ end
 --- The newer |cnCOLOR_NAME: form is stripped too -- retail uses it in
 --- places the old |cffRRGGBB form used to appear.
 local function stripColors(text)
+  if ns.Util.IsSecret(text) then return nil end
   if not text then return text end
   text = text:gsub("|c%x%x%x%x%x%x%x%x", "")
   text = text:gsub("|c[nN]%u[%u%d_]*:", "")
@@ -111,8 +114,10 @@ local RIGHT_SQUOTE = "\226\128\153"
 --- An already-annotated name row is covered by rank 3 below instead, which
 --- ranks it under a bare exact match rather than tied with one.
 local function matchKey(text)
+  if ns.Util.IsSecret(text) then return nil end
   if not text then return nil end
   text = stripColors(text)
+  if not text then return nil end
   text = text:gsub(RIGHT_SQUOTE, "")
   text = text:gsub("[%s%p]", "")
   return text:lower()
@@ -200,6 +205,7 @@ end
 --- "Helltz-Moon Guard" into "Guard".
 local function memberKey(memberInfo)
   local name = memberInfo and memberInfo.name
+  if ns.Util.IsSecret(name) then return nil, nil end
   if type(name) ~= "string" or name == "" then return nil, nil end
   name = stripColors(name):gsub("^%s+", ""):gsub("%s+$", "")
   if name == "" then return nil, nil end
@@ -284,9 +290,9 @@ local function annotate(entry)
   -- keying on text alone made a live Comm update -- or a snapshot adopted
   -- mid-session -- invisible on an already-open roster until it was closed
   -- and reopened.
-  if st.key == key and st.ilvl == ilvl and st.fs and st.text
-     and st.fs:GetText() == st.text then
-    return
+  if st.key == key and st.ilvl == ilvl and st.fs and st.text then
+    local shown = st.fs:GetText()
+    if not ns.Util.IsSecret(shown) and shown == st.text then return end
   end
 
   local seen = ns.db.debug and {} or nil
@@ -302,6 +308,10 @@ local function annotate(entry)
   end
 
   local current = fs:GetText()
+  if ns.Util.IsSecret(current) then
+    ns.Debug("roster: name fontstring holds a secret value, leaving it alone")
+    return
+  end
 
   -- Provenance beats pattern matching. If this is still the widget we wrote
   -- to and the string we wrote is still on it -- the case a changed item
