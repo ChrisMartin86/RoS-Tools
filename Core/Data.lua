@@ -446,7 +446,10 @@ end
 
 --- Look up by unit token. Returns ilvl, key.
 function Data:GetForUnit(unit)
-  if not unit or not UnitExists(unit) or not UnitIsPlayer(unit) then return nil end
+  -- A secret unit token errors inside UnitExists/UnitIsPlayer, so it has to be
+  -- rejected before either call, not after.
+  if not unit or ns.Util.IsSecret(unit) then return nil end
+  if not UnitExists(unit) or not UnitIsPlayer(unit) then return nil end
   local name, realm = UnitName(unit)
   -- UnitName is documented as returning secrets for non-player and pet units
   -- in combat. UnitIsPlayer above should already have excluded those, but the

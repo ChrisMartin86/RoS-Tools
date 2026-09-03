@@ -131,9 +131,20 @@ local function newAddon(ilvls, opts)
   end
 
   -- Unit-token side. A secret GUID must still resolve through here.
-  env.UnitExists = function(u) return opts.unitExists ~= false and u ~= nil end
-  env.UnitIsPlayer = function() return opts.unitIsPlayer ~= false end
-  env.UnitName = function() return opts.unitName or "Tester", opts.unitRealm end
+  --
+  -- 12.0 rejects a secret for the `unit` argument outright -- "Secret values
+  -- are only allowed during untainted execution for this argument" -- which is
+  -- what a whole instance run of UnitIsPlayer errors turned out to be. The
+  -- stubs raise the same way so a missing guard fails the run.
+  local function noSecretUnit(fn)
+    return function(u, ...)
+      if SECRETS[u] then error("secret unit token passed to a Unit* API", 2) end
+      return fn(u, ...)
+    end
+  end
+  env.UnitExists = noSecretUnit(function(u) return opts.unitExists ~= false and u ~= nil end)
+  env.UnitIsPlayer = noSecretUnit(function() return opts.unitIsPlayer ~= false end)
+  env.UnitName = noSecretUnit(function() return opts.unitName or "Tester", opts.unitRealm end)
   env.GetPlayerInfoByGUID = function(guid)
     if SECRETS[guid] then error("GetPlayerInfoByGUID saw a secret", 2) end
     if type(guid) == "string" and guid:find("^Player%-") then
@@ -268,6 +279,39 @@ c.tooltip.unit = nil
 c.header("Auction House Resident")
 c.onUnitTooltip(c.tooltip, { guid = "Creature-0-1234" })
 check("an NPC GUID stamps nothing", c.tooltip:text() == "", c.tooltip:text())
+
+-- ==================================================================
+section("8. secret unit tokens")
+-- The instance case: data.guid is secret, so the GUID path bails and the unit
+-- path runs -- but GetUnit() hands back a secret token too, and UnitIsPlayer
+-- errors on it before it can filter anything. 109 of these in one run.
+-- ==================================================================
+-- markSecret keys on the value, and Lua interns strings -- so marking
+-- "mouseover" here would make that token secret for the rest of the run and
+-- quietly break the plain-token check below. Each secret token gets its own
+-- literal.
+local d = newAddon({ [KEY] = 620 })
+d.reset()
+d.tooltip.unit = markSecret("secret-unit-token")
+d.header("Some Instance Trash")
+local okUnit, unitErr = pcall(d.onUnitTooltip, d.tooltip, { guid = newSecret("data.guid") })
+check("a secret unit token does not error", okUnit, tostring(unitErr))
+check("nothing was stamped from a secret unit token", d.tooltip:text() == "", d.tooltip:text())
+
+-- Direct callers (the Classic/legacy hook) reach GetForUnit without going
+-- through Tooltip, so the guard must live there as well.
+local okGFU, gfuErr = pcall(function() return d.ns.Data:GetForUnit(markSecret("secret-target-token")) end)
+check("GetForUnit never passes a secret to a Unit* API", okGFU, tostring(gfuErr))
+check("GetForUnit returns nil for a secret token",
+      okGFU and d.ns.Data:GetForUnit(markSecret("secret-target-token")) == nil)
+
+-- A normal token still works.
+local e = newAddon({ [KEY] = 480 }, { unitName = "Peidae" })
+e.reset()
+e.tooltip.unit = "mouseover"
+e.onUnitTooltip(e.tooltip, { guid = newSecret("data.guid") })
+check("a plain unit token still stamps",
+      e.tooltip:text():find("480", 1, true) ~= nil, e.tooltip:text())
 
 -- ==================================================================
 print(("\n%d passed, %d failed"):format(pass, fail))

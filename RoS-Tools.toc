@@ -2,7 +2,7 @@
 ## Title: RoS-Tools
 ## Notes: Shows guild item levels from an external Blizzard API export.
 ## Author: Icebyte-Moon Guard
-## Version: 2.3.0
+## Version: 2.3.1
 ## SavedVariables: RoSToolsDB
 ## IconTexture: Interface\Icons\INV_Misc_Book_09
 ## X-Category: Guild

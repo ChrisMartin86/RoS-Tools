@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.3.1
+
+### Fixed
+
+- **Unit tooltips threw a Lua error in instances** — around a hundred per run.
+  Inside an instance the game hands the addon a protected unit reference, and
+  the check that skips non-players choked on it before it could skip anything.
+  Protected references are now recognised and passed over; tooltips on
+  guildmates are unaffected.
+
 ## 2.3.0
 
 ### Added

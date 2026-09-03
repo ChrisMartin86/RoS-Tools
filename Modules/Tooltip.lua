@@ -109,6 +109,12 @@ local function onUnitTooltip(tooltip, data)
   if not ilvl then
     local _, unit = tooltip:GetUnit()
     if unit then
+      -- A secret unit token cannot be handed to UnitIsPlayer at all: the API
+      -- rejects secrets for that argument during tainted execution, which is
+      -- what threw 109 times in a single instance run. Nothing downstream can
+      -- identify a unit we are not allowed to inspect, so stop here instead of
+      -- falling through to the header parse.
+      if ns.Util.IsSecret(unit) then return end
       if not UnitIsPlayer(unit) then return end
       ilvl, key = ns.Data:GetForUnit(unit)
     end
