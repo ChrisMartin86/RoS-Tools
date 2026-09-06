@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The sidecar installer could not find a release to install** unless
+  `ROSTOOLS_SIDECAR_VERSION` pinned one. Windows PowerShell 5.1 hands a JSON
+  array back from `Invoke-RestMethod` as a single un-enumerated object, so the
+  whole page of releases arrived as one item, no tag was ever read off it, and
+  the run ended in "No stable sidecar-v* release found" on a repo full of them.
+  Pinning a version worked throughout because that path asks for one release
+  rather than a list. Maintainer-facing only; the addon is unaffected.
+
+### Added
+
+- **Guild roster names no longer carry the realm.** The Guild & Communities
+  roster shows `Peidae` where it used to show `Peidae-Khadgar`, so the name
+  column is readable at its usual width and the item level is not pushed off
+  the end of it. The hover tooltip matches. On by default, including on
+  upgrade; `/ros set hideRealm off` puts the realm back.
+
 ## 2.3.1
 
 ### Fixed

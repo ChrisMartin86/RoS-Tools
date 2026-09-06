@@ -75,7 +75,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($sidecarPath, [
 if ($errors) { throw "Install-Sidecar.ps1 does not parse: $($errors[0].Message)" }
 
 $wanted = @('Get-Comparable', 'Get-TagVersion', 'Test-ReleaseFlag',
-            'Select-SidecarRelease', 'ConvertTo-InstalledVersion')
+            'Select-SidecarRelease', 'ConvertTo-InstalledVersion', 'Expand-ApiPage')
 $found  = @{}
 foreach ($fn in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
     if ($wanted -contains $fn.Name) {
@@ -304,6 +304,70 @@ $stringFlagged = @(
 )
 Assert-That 'a release whose flags are strings is still selectable' `
     ((Select-SidecarRelease -Releases $stringFlagged -Prefix $prefix).tag_name -eq 'sidecar-v1.3.0')
+
+# --- how a page comes back off the wire --------------------------------------
+# Windows PowerShell 5.1's Invoke-RestMethod hands a JSON array back as ONE
+# PSObject-wrapped Object[] instead of enumerating it, so `@(Invoke-RestMethod)`
+# yielded a single element that WAS the page. Everything downstream then looked
+# for 'tag_name' on an Object[] and found nothing: "No stable sidecar-v* release
+# found" on a repo full of them, on 5.1 only, while pinning a version kept
+# working because /releases/tags/<tag> returns a lone JSON object.
+#
+# Write-Output -NoEnumerate reproduces that shape exactly on pwsh.
+$wirePage = @(
+    [pscustomobject]@{ tag_name = 'sidecar-v1.3.0'; draft = $false; prerelease = $false }
+    [pscustomobject]@{ tag_name = 'sidecar-v1.2.0'; draft = $false; prerelease = $false }
+)
+
+# Expand-ApiPage returns the List itself and must NOT be wrapped in @( ) -- it
+# guards against unrolling, so @( ) would put the List back inside an array and
+# every assertion below would read 1. That is deliberate: the caller keeps a
+# List whose .Count is the number of releases on the page, whether that is
+# zero, one or a hundred.
+$asFive = Expand-ApiPage -Response (Write-Output -NoEnumerate $wirePage)
+Assert-That 'a 5.1-shaped page (one wrapped array) expands to its releases' `
+    ($asFive.Count -eq 2 -and $asFive[0].tag_name -eq 'sidecar-v1.3.0') `
+    -Detail ("got " + $asFive.Count + " item(s), first is " + $(if ($asFive.Count) { $asFive[0].GetType().Name } else { '<none>' }))
+
+$asSeven = Expand-ApiPage -Response $wirePage
+Assert-That 'a 7-shaped page (already enumerated) expands to the same thing' `
+    ($asSeven.Count -eq 2 -and $asSeven[1].tag_name -eq 'sidecar-v1.2.0') `
+    -Detail ("got " + $asSeven.Count + " item(s)")
+
+$single = Expand-ApiPage -Response ([pscustomobject]@{ tag_name = 'sidecar-v1.3.0' })
+Assert-That 'a lone release object is one item, not exploded into properties' `
+    ($single.Count -eq 1 -and $single[0].tag_name -eq 'sidecar-v1.3.0') `
+    -Detail ("got " + $single.Count + " item(s)")
+
+$emptyPage = Expand-ApiPage -Response @()
+Assert-That 'an empty page is zero items' `
+    ($emptyPage.Count -eq 0) -Detail ("got " + $emptyPage.Count)
+
+# Not one null: a null in the list would reach Select-SidecarRelease, and under
+# StrictMode a property read on it is a throw rather than a skip.
+$nullPage = Expand-ApiPage -Response $null
+Assert-That 'a null response is zero items, not one null' `
+    ($nullPage.Count -eq 0) -Detail ("got " + $nullPage.Count)
+
+# A string is IEnumerable. Splitting one into characters here would hand
+# Select-SidecarRelease a bag of chars rather than an unusable-but-obvious blob.
+$oops = Expand-ApiPage -Response 'not json'
+Assert-That 'a string response is not shredded into characters' `
+    ($oops.Count -eq 1 -and $oops[0] -eq 'not json') `
+    -Detail ("got " + $oops.Count + " item(s)")
+
+# The List must survive being returned THROUGH another call boundary as well --
+# that is how the installer uses it.
+function Test-PassThrough { param($R) return (Expand-ApiPage -Response $R) }
+$relayed = Test-PassThrough (Write-Output -NoEnumerate $wirePage)
+Assert-That 'the expanded page survives being returned through a caller' `
+    ($relayed.Count -eq 2) -Detail ("got " + $relayed.Count + " item(s)")
+
+# The end-to-end shape of the bug: selection over a 5.1-shaped page.
+$fromWire = Select-SidecarRelease -Releases (Expand-ApiPage -Response (Write-Output -NoEnumerate $wirePage)) -Prefix $prefix
+Assert-That 'the newest stable release is found in a 5.1-shaped page' `
+    ($null -ne $fromWire -and $fromWire.tag_name -eq 'sidecar-v1.3.0') `
+    -Detail ("picked '" + $(if ($fromWire) { $fromWire.tag_name } else { '<null>' }) + "'")
 
 # =============================================================================
 #  Sandbox runs
@@ -599,7 +663,8 @@ function Invoke-SidecarInstaller {
         [switch] $KillDenied,
         [switch] $RunKeyThrows,
         [switch] $StartThrows,
-        [switch] $CorruptOnRunKey
+        [switch] $CorruptOnRunKey,
+        [switch] $Legacy51Rest
     )
 
     $script:RosBox          = $Box
@@ -609,6 +674,11 @@ function Invoke-SidecarInstaller {
     $script:RosRunKeyThrows = [bool] $RunKeyThrows
     $script:RosStartThrows  = [bool] $StartThrows
     $script:RosCorrupt      = [bool] $CorruptOnRunKey
+    # -Legacy51Rest makes the fake answer the way Windows PowerShell 5.1's
+    # Invoke-RestMethod really does: the page as one un-enumerated array. The
+    # old fake returned an already unrolled array, which is why seven sandbox
+    # runs stayed green while the one-liner was broken on every 5.1 machine.
+    $script:RosRest51       = [bool] $Legacy51Rest
     $script:RosStarts       = New-Object System.Collections.Generic.List[string]
 
     $env:ROSTOOLS_SIDECAR_PATH  = $Box.Target
@@ -653,9 +723,17 @@ function Invoke-SidecarInstaller {
                     [pscustomobject]@{ name = 'RoSToolsSidecar.exe'; browser_download_url = 'https://example/exe' }
                     [pscustomobject]@{ name = 'RoSToolsSidecar.exe.sha256'; browser_download_url = 'https://example/sha' }
                 )
-                if ("$Uri" -match 'page=1(&|$)' -or "$Uri" -match '/releases/tags/') {
-                    return @([pscustomobject]@{ tag_name = 'sidecar-v1.4.0'; draft = $false
-                                                prerelease = $false; assets = $assets })
+                if ("$Uri" -match '/releases/tags/') {
+                    return [pscustomobject]@{ tag_name = 'sidecar-v1.4.0'; draft = $false
+                                              prerelease = $false; assets = $assets }
+                }
+                if ("$Uri" -match 'page=1(&|$)') {
+                    $page = @([pscustomobject]@{ tag_name = 'sidecar-v1.4.0'; draft = $false
+                                                 prerelease = $false; assets = $assets })
+                    # `,$page` emits the array as a single object rather than
+                    # enumerating it -- 5.1's shape. Plain `return $page` is 7's.
+                    if ($script:RosRest51) { return , $page }
+                    return $page
                 }
                 return @()
             }
@@ -743,6 +821,19 @@ Assert-That 'a clean run installs the new build and starts it' `
 Assert-That 'and leaves no .new sibling behind' `
     (((Get-InstallDirName -Box $box) -join ',') -eq 'RoSToolsSidecar.exe') `
     -Detail ((Get-InstallDirName -Box $box) -join ', ')
+
+# --- 1b. the same clean run, but the API answers the way 5.1 answers --------
+# This is the whole bug: identical release, identical everything, and the run
+# died at "No stable sidecar-v* release found" purely because the page arrived
+# as one un-enumerated array.
+$box = New-SidecarSandbox 'sc-ps51-list'
+$out = Invoke-SidecarInstaller -Box $box -Running -Legacy51Rest
+Assert-That 'an un-enumerated 5.1 release page still installs the new build' `
+    ((Get-TargetState -Box $box) -eq 'new' -and $script:RosStarts.Count -eq 1) `
+    -Detail ("target=" + (Get-TargetState -Box $box) + " starts=" + $script:RosStarts.Count + "`n" + $out)
+
+Assert-That 'and it never claims there is no release to install' `
+    ($out -notmatch 'No stable') -Detail $out
 
 # --- 2. a cross-volume transfer that runs out of space ----------------------
 # Move-Item from %TEMP% to another volume is copy-then-delete. Cut short, it

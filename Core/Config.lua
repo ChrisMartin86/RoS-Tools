@@ -22,6 +22,7 @@ local DEFAULTS = {
   showDelta      = false,  -- show +/- vs. your own equipped ilvl
   rosterColumn   = true,   -- append ilvl in the guild/community roster
   rosterTooltip  = true,   -- ilvl in the hover tooltip over a roster row
+  hideRealm      = true,   -- drop the "-Realm" suffix from names in the roster
   chatTooltip    = true,   -- ilvl when hovering a player name in chat
   suppressInCombat = false,-- hide the line while in combat
   commEnabled    = true,   -- live ilvl updates from online guildmates via addon comm

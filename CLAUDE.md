@@ -249,6 +249,17 @@ must keep running on **Windows PowerShell 5.1** as well as 7:
   `ProductVersion`) while a tag says `1.3.0`; compared naively an up-to-date
   install looks stale and re-downloads 50 MB every run.
   `Install-Sidecar.ps1`'s `Get-Comparable` flattens both to major/minor/build.
+- **Unroll a JSON array response by hand; never trust `@(Invoke-RestMethod ...)`.**
+  Windows PowerShell 5.1 emits a JSON *array* as one PSObject-wrapped
+  `Object[]` instead of enumerating it, so `@( )` yields a single element that
+  *is* the whole page. That is why the unpinned sidecar one-liner reported
+  *"No stable sidecar-v* release found"* on a repo full of releases while
+  `ROSTOOLS_SIDECAR_VERSION` kept working — `/releases/tags/<tag>` returns a
+  lone JSON object, which needs no unrolling. Route every array-returning call
+  through `Install-Sidecar.ps1`'s `Expand-ApiPage`, and do not wrap its result
+  in `@( )`. PowerShell 7 enumerates, so this is invisible unless a test
+  reproduces 5.1's shape with `Write-Output -NoEnumerate`; the sandbox fake in
+  `Tools/release-selection.Tests.ps1` does, behind `-Legacy51Rest`.
 - **Never `Join-Path` a path whose drive may not exist.** `Join-Path` resolves the
   drive qualifier through the provider and throws *"Cannot find drive"* for an
   unmounted letter; with `$ErrorActionPreference = 'Stop'` that ends the run

@@ -131,6 +131,7 @@ lookup.
 | `showDelta` | off | Show +/- against your own equipped ilvl |
 | `rosterColumn` | on | Annotate the Guild & Communities roster |
 | `rosterTooltip` | on | Add the ilvl line to the roster row hover tooltip |
+| `hideRealm` | on | Drop the `-Realm` suffix from names in the Guild & Communities roster |
 | `chatTooltip` | on | Show a tooltip when hovering a player name in chat |
 | `suppressInCombat` | off | Hide the line while in combat |
 | `commEnabled` | on | Live ilvl updates from online guildmates via addon comm (`GUILD` channel) |

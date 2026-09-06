@@ -166,6 +166,41 @@
         return [bool] $value
     }
 
+    # Pure: turn whatever the releases endpoint handed back into a flat list of
+    # release objects.
+    #
+    # Windows PowerShell 5.1's Invoke-RestMethod does NOT enumerate a JSON array
+    # into the pipeline -- it emits the whole page as ONE PSObject-wrapped
+    # Object[]. So `@(Invoke-RestMethod ...)` produced a one-element array whose
+    # single element was the array of releases; the loop below added THAT to
+    # $all as one item, and Select-SidecarRelease looked for a 'tag_name'
+    # property on an Object[], found none and skipped it -- every release, every
+    # page. The result was "No stable sidecar-v* release found" against a repo
+    # full of them, on the shell most maintainers actually run, while
+    # ROSTOOLS_SIDECAR_VERSION kept working the whole time because
+    # /releases/tags/<tag> returns a single JSON OBJECT that needs no unrolling.
+    # PowerShell 7 enumerates, and the sandbox's fake returned an already
+    # unrolled array, so nothing in testing ever saw it.
+    #
+    # Unwrap through PSObject.BaseObject and enumerate by hand rather than
+    # trusting the pipeline to do it: that behaves the same on both shells.
+    function Expand-ApiPage {
+        param($Response)
+        $out = New-Object System.Collections.Generic.List[object]
+        if ($null -eq $Response) { return , $out }
+        $base = $Response
+        if ($null -ne $Response.PSObject) { $base = $Response.PSObject.BaseObject }
+        if (($base -is [System.Collections.IEnumerable]) -and ($base -isnot [string])) {
+            foreach ($item in $base) { $out.Add($item) }
+        }
+        else { $out.Add($Response) }
+        # The comma is load-bearing: a bare `return $out` hands the List to the
+        # pipeline, which unrolls it -- a one-release page would come back as a
+        # single release object and a zero-release page as nothing at all, which
+        # is the same class of bug this function exists to kill.
+        return , $out
+    }
+
     # Pure: given whatever the releases endpoint returned, pick the newest
     # STABLE sidecar build, or $null when there is none. Deliberately separate
     # from the web call so Tools/release-selection.Tests.ps1 can drive it with a
@@ -284,14 +319,19 @@
             $all      = New-Object System.Collections.Generic.List[object]
             foreach ($page in 1..$pageCap) {
                 $uri   = "https://api.github.com/repos/$repo/releases?per_page=$perPage&page=$page"
-                $batch = @(Invoke-RestMethod -Uri $uri -Headers $headers -UseBasicParsing)
+                $batch = Expand-ApiPage -Response (Invoke-RestMethod -Uri $uri -Headers $headers -UseBasicParsing)
                 foreach ($item in $batch) { $all.Add($item) }
                 if ($batch.Count -lt $perPage) { break }
             }
 
             $release = Select-SidecarRelease -Releases $all -Prefix $tagPrefix
             if (-not $release) {
-                throw "No stable $tagPrefix* release found. Cut one, or set ROSTOOLS_SIDECAR_VERSION."
+                # The count is in the message on purpose: "among 1 release(s)"
+                # on a repo with a dozen is the fingerprint of a page that came
+                # back unenumerated, and that read as "cut a release" for far
+                # too long.
+                throw ("No stable " + $tagPrefix + "* release found among " + $all.Count +
+                       " release(s) returned by the API. Cut one, or set ROSTOOLS_SIDECAR_VERSION.")
             }
         }
 

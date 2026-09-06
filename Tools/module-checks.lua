@@ -174,9 +174,12 @@ local function newWidget(kind)
 end
 
 -- ---------- addon environment ----------
+-- Modules/Tooltip.lua is loaded for ns.AddIlvlLines, which Roster's hover
+-- tooltip calls -- stubbing it would have left the roster tooltip asserting
+-- against a fake.
 local FILES = { "Core/Init.lua", "Core/Util.lua", "Core/Config.lua",
-                "Core/Data.lua", "Modules/Browser.lua", "Modules/Commands.lua",
-                "Modules/Roster.lua" }
+                "Core/Data.lua", "Modules/Tooltip.lua", "Modules/Browser.lua",
+                "Modules/Commands.lua", "Modules/Roster.lua" }
 
 --- Stand up one addon instance. Returns the namespace plus the pieces a
 --- scenario drives: the mixin (whose UpdateNameFrame is the hooked entry
@@ -215,6 +218,20 @@ local function newAddon(ilvls, opts)
     return w
   end
   env.UIParent = NOOP
+
+  -- GameTooltip, for Roster's hover handler. Real enough for the assertions
+  -- that read it: owner, shown state, and the lines in order.
+  local tip = { lines = {}, shown = false, owner = nil }
+  function tip:SetOwner(o) self.owner, self.shown = o, true; self.lines = {} end
+  function tip:GetOwner() return self.owner end
+  function tip:IsShown() return self.shown end
+  function tip:ClearLines() self.lines = {} end
+  function tip:AddLine(text) self.lines[#self.lines + 1] = text end
+  function tip:AddDoubleLine(l, r) self.lines[#self.lines + 1] = tostring(l) .. "\t" .. tostring(r) end
+  function tip:Hide() self.shown, self.owner = false, nil end
+  function tip:Show() self.shown = true end
+  setmetatable(tip, { __index = function() return NOOP end })
+  env.GameTooltip = tip
   env.UISpecialFrames = {}
   env.SlashCmdList = {}
   env.tinsert = table.insert
@@ -278,6 +295,12 @@ local function newAddon(ilvls, opts)
 
   ns.LoadConfig()
   ns.db.debug = opts.debug or false
+  -- hideRealm SHIPS ON, but every scenario written before it exists asserts
+  -- the full "Peidae-Khadgar" that the roster used to render, and those
+  -- assertions are bug reports worth keeping literal. So the harness opts out
+  -- by default and section 11 opts back in; section 11 also asserts the
+  -- shipped default itself, so nothing here can quietly become the real one.
+  ns.db.hideRealm = opts.hideRealm == true
   ns.playerName = "Tester"
   ns.playerRealmSlug = "khadgar"
   -- Pre-2.0 flat globals, still sitting in the addon folder. Set before the
@@ -811,6 +834,383 @@ sec.mixin.UpdateNameFrame(nameRow)
 noSwallowedError("a name row rewritten with a secret does not throw")
 check("and the secret was left on the widget untouched",
       U.IsSecret(nameFs:GetText()) == true)
+
+-- ==================================================================
+section("11. hideRealm: the \"-Realm\" suffix comes off the roster name")
+-- The feature is a rewrite of a string the addon does not own, on rows
+-- Blizzard also writes to, so the interesting cases are the same ones that
+-- broke the ilvl suffix: pooled rows, rows we already touched, rows Blizzard
+-- appended to, and the option being toggled mid-session.
+-- ==================================================================
+local h = newAddon({ [KEY] = 620 }, { hideRealm = true })
+local h_defaults = h.ns.DEFAULTS
+check("hideRealm ships on", h_defaults.hideRealm == true)
+
+-- The plain case, with Blizzard's original owning the name (opts.nameFs), so
+-- the row is rewritten to "Peidae-Khadgar" before every hook pass -- which is
+-- what actually happens in game.
+local hFs = newFontString("Peidae-Khadgar")
+local hEntry = newEntry(MEMBER, { hFs }, { nameFs = hFs })
+h.mixin.UpdateNameFrame(hEntry)
+check("the realm is gone from the row",
+      hFs:GetText():find("Khadgar", 1, true) == nil, show(hFs:GetText()))
+check("the name is still there, and the item level with it",
+      hFs:GetText() == "Peidae |cff1eff00(620)|r", show(hFs:GetText()))
+
+local hSettled = hFs:GetText()
+for _ = 1, 20 do h.mixin.UpdateNameFrame(hEntry) end
+check("REPEAT: twenty refreshes leave it byte-identical",
+      hFs:GetText() == hSettled, show(hFs:GetText()))
+
+-- A live item level change has to reach a row whose base we rewrote. The
+-- memo keys on the ilvl, so this is the path that was broken for the suffix.
+h.ns.Data:ApplyLiveUpdate(KEY, 705)
+h.mixin.UpdateNameFrame(hEntry)
+check("LIVE UPDATE: the new number lands and the realm stays hidden",
+      hFs:GetText() == "Peidae |cffff8000(705)|r", show(hFs:GetText()))
+h.ns.Data:ApplyLiveUpdate(KEY, 620)
+h.mixin.UpdateNameFrame(hEntry)
+
+-- Blizzard's own trailing text must survive the realm strip. A "cut at the
+-- first hyphen" implementation eats it, which is exactly why the strip works
+-- by collapse instead.
+local hAltFs = newFontString("Peidae-Khadgar |cff808080(3)|r")
+h.mixin.UpdateNameFrame(newEntry(MEMBER, { hAltFs }))
+check("ALT-GROUPED: Blizzard's trailing (3) survives the realm strip",
+      hAltFs:GetText() == "Peidae |cff808080(3)|r |cff1eff00(620)|r",
+      show(hAltFs:GetText()))
+
+-- The realm carrying its own colour wrapper, which is how a cross-realm
+-- suffix is commonly dimmed. The wrapper's own "|r" is harmless and is
+-- allowed through; the words are what matter.
+local hDimFs = newFontString("|cff40c7ebPeidae|cff808080-Khadgar|r")
+h.mixin.UpdateNameFrame(newEntry(MEMBER, { hDimFs }))
+check("DIMMED REALM: a colour-wrapped realm is stripped, class colour kept",
+      hDimFs:GetText():find("Khadgar", 1, true) == nil
+        and hDimFs:GetText():find("|cff40c7ebPeidae", 1, true) == 1
+        and occurrences(hDimFs:GetText(), "|cff1eff00(620)|r") == 1,
+      show(hDimFs:GetText()))
+
+-- A space-stripped realm: the roster renders "MoonGuard" where memberInfo
+-- says "Moon Guard". matchKey is what makes the two comparable.
+local SPACED = { name = "Helltz-Moon Guard" }
+local hSpace = newAddon({ ["Helltz-moon-guard"] = 640 }, { hideRealm = true })
+local hSpaceFs = newFontString("Helltz-MoonGuard")
+hSpace.mixin.UpdateNameFrame(newEntry(SPACED, { hSpaceFs }))
+check("SPACED REALM: \"Moon Guard\" hides even spelled \"MoonGuard\"",
+      hSpaceFs:GetText() == "Helltz |cff1eff00(640)|r", show(hSpaceFs:GetText()))
+
+-- Realm in a sibling region: our name font string holds only "Peidae", so
+-- there is nothing to strip. The correct outcome is a no-op on the text, NOT
+-- a guess that mangles the name.
+local hBare = newFontString("Peidae")
+local hSibling = newFontString("Khadgar")
+h.mixin.UpdateNameFrame(newEntry(MEMBER, { hBare, hSibling }))
+check("SIBLING REALM: a bare-name row is annotated, not mangled",
+      hBare:GetText() == "Peidae |cff1eff00(620)|r", show(hBare:GetText()))
+
+-- Toggling the option mid-session. The memo's cheap exit compares the widget
+-- against the string we last wrote, and that string is still on the widget --
+-- so without hideRealm in the memo key the row is pinned to the old rendering
+-- until Blizzard happens to rewrite it. This row has no nameFs on purpose:
+-- nothing else will refresh it.
+local tFs = newFontString("Peidae-Khadgar")
+local tEntry = newEntry(MEMBER, { tFs })
+h.mixin.UpdateNameFrame(tEntry)
+check("baseline for the toggle: realm hidden", tFs:GetText() == "Peidae |cff1eff00(620)|r",
+      show(tFs:GetText()))
+h.ns.db.hideRealm = false
+h.mixin.UpdateNameFrame(tEntry)
+check("TOGGLE OFF: the realm comes back on the very next pass",
+      tFs:GetText() == "Peidae-Khadgar |cff1eff00(620)|r", show(tFs:GetText()))
+h.ns.db.hideRealm = true
+h.mixin.UpdateNameFrame(tEntry)
+check("TOGGLE ON: and goes away again, without doubling anything",
+      tFs:GetText() == "Peidae |cff1eff00(620)|r", show(tFs:GetText()))
+
+-- With rosterColumn off, hideRealm still has to work: the two are separate
+-- settings and the hook is shared.
+local hOnly = newAddon({ [KEY] = 620 }, { hideRealm = true })
+hOnly.ns.db.rosterColumn = false
+local hOnlyFs = newFontString("Peidae-Khadgar")
+hOnly.mixin.UpdateNameFrame(newEntry(MEMBER, { hOnlyFs }))
+check("COLUMN OFF: the realm still hides, with no item level appended",
+      hOnlyFs:GetText() == "Peidae", show(hOnlyFs:GetText()))
+
+-- And a member with no data at all, which returns early on the ilvl path.
+local hNoData = newAddon({}, { hideRealm = true })
+local hNoDataFs = newFontString("Peidae-Khadgar")
+hNoData.mixin.UpdateNameFrame(newEntry(MEMBER, { hNoDataFs }))
+check("NO DATA: a member the export never saw still loses the realm",
+      hNoDataFs:GetText() == "Peidae", show(hNoDataFs:GetText()))
+
+-- Both off: the row must be left exactly as Blizzard wrote it.
+local hOff = newAddon({ [KEY] = 620 })
+hOff.ns.db.rosterColumn = false
+local hOffFs = newFontString("Peidae-Khadgar")
+hOff.mixin.UpdateNameFrame(newEntry(MEMBER, { hOffFs }))
+check("BOTH OFF: the row is untouched",
+      hOffFs:GetText() == "Peidae-Khadgar", show(hOffFs:GetText()))
+
+-- The hover tooltip title has to agree with the row. A tooltip spelling out
+-- the realm the row just hid reads as a bug.
+local tipEntry = newEntry(MEMBER, { newFontString("Peidae-Khadgar") })
+h.mixin.OnEnter(tipEntry)
+check("TOOLTIP: the title matches the row, realm and all",
+      h.env.GameTooltip.lines[1] == "Peidae", show(h.env.GameTooltip.lines[1]))
+h.ns.db.hideRealm = false
+h.mixin.OnLeave(tipEntry)
+h.mixin.OnEnter(tipEntry)
+check("and with hideRealm off it is the full name again",
+      h.env.GameTooltip.lines[1] == "Peidae-Khadgar", show(h.env.GameTooltip.lines[1]))
+h.mixin.OnLeave(tipEntry)
+h.ns.db.hideRealm = true
+
+-- A member literally named "Cff", on a class-coloured row. matchKey does not
+-- strip an INCOMPLETE colour escape, so the prefix "|cff" collapsed to "cff",
+-- tied the bare name, and the splice replaced the whole name with a colour
+-- fragment -- an empty name cell on the roster. The "|cnNAME:" form has the
+-- same family ("Cn", "Cnn"...). Found by fuzzing, not by reading.
+local ODD = { name = "Cff-Khadgar" }
+local hOdd = newAddon({ ["Cff-khadgar"] = 620 }, { hideRealm = true })
+local hOddFs = newFontString("|cff00ff00Cff-Khadgar")
+hOdd.mixin.UpdateNameFrame(newEntry(ODD, { hOddFs }))
+check("PARTIAL ESCAPE: a member named Cff keeps their name",
+      hOddFs:GetText() == "|cff00ff00Cff |cff1eff00(620)|r", show(hOddFs:GetText()))
+
+local ODDN = { name = "Cnn-Khadgar" }
+local hOddN = newAddon({ ["Cnn-khadgar"] = 620 }, { hideRealm = true })
+local hOddNFs = newFontString("|cnGREEN_FONT_COLOR:Cnn-Khadgar|r")
+hOddN.mixin.UpdateNameFrame(newEntry(ODDN, { hOddNFs }))
+check("and so does a member named Cnn under the |cnNAME: form",
+      hOddNFs:GetText() == "|cnGREEN_FONT_COLOR:Cnn|r |cff1eff00(620)|r",
+      show(hOddNFs:GetText()))
+
+-- The walk is the expensive part, and Blizzard re-sets the name on nearly
+-- every UpdateNameFrame call -- so "the string we wrote is still there" is the
+-- exit that almost never fires in game. Count the walks: a settled row must
+-- stop walking, whether or not the member is in the export.
+local function walkCount(member, ilvls)
+  local w = newAddon(ilvls, { hideRealm = true })
+  local fs = newFontString(member.name)
+  local entry = newEntry(member, { fs }, { nameFs = fs })
+  local walks = 0
+  local realGetRegions = entry.GetRegions
+  entry.GetRegions = function(self) walks = walks + 1 return realGetRegions(self) end
+  for _ = 1, 50 do w.mixin.UpdateNameFrame(entry) end
+  return walks, fs:GetText()
+end
+local walks, settledText = walkCount(MEMBER, { [KEY] = 620 })
+check("SETTLED ROW: 50 refreshes walk the widget tree once, not fifty",
+      walks == 1, walks .. " walks")
+check("and the row is still correct after them",
+      settledText == "Peidae |cff1eff00(620)|r", show(settledText))
+local missWalks = walkCount(MEMBER, {})
+check("NO DATA: a member absent from the export settles too",
+      missWalks == 1, missWalks .. " walks")
+
+-- ------------------------------------------------------------------
+-- Round-two review findings. Each of these shipped broken in the first cut
+-- of hideRealm and was found by adversarial review, not by the tests above.
+-- ------------------------------------------------------------------
+
+-- F1. Once the row reads "Peidae", NO text rank matches it any more: 1-4 want
+-- the full "Peidae-Khadgar" and rank 5 tests a prefix of the full name. A
+-- realm-stripped row that Blizzard has since appended to therefore scored
+-- nothing, the item level froze, and the annotation migrated to whatever
+-- other column still spelled the realm out -- the impostor bug, reopened.
+-- The row here has no nameFs on purpose: Blizzard is not rewriting it.
+local f1 = newAddon({ [KEY] = 620 }, { hideRealm = true })
+local f1Name = newFontString("Peidae-Khadgar")
+local f1Note = newFontString("Peidae-Khadgar raid lead")
+local f1Entry = newEntry(MEMBER, { f1Name, f1Note })
+f1.mixin.UpdateNameFrame(f1Entry)
+f1Name:SetText(f1Name:GetText() .. " |cff808080(3)|r")   -- Blizzard appends after us
+f1.ns.Data:ApplyLiveUpdate(KEY, 705)
+f1.mixin.UpdateNameFrame(f1Entry)
+check("F1: a live update still reaches a realm-stripped row",
+      occurrences(f1Name:GetText(), "|cffff8000(705)|r") == 1
+        and f1Name:GetText():find("620", 1, true) == nil, show(f1Name:GetText()))
+check("F1: and Blizzard's trailing text is still on it, once",
+      occurrences(f1Name:GetText(), "|cff808080(3)|r") == 1, show(f1Name:GetText()))
+check("F1: the note column was not annotated instead",
+      f1Note:GetText() == "Peidae-Khadgar raid lead", show(f1Note:GetText()))
+
+-- F2. The same row, un-hidden. The base kept in the memo has to be the
+-- PRISTINE name, spliced back under whatever Blizzard appended -- an equality
+-- test against our own rendering falls through to "whatever is on the widget",
+-- which is already stripped, and the realm can then never come back.
+f1.ns.db.hideRealm = false
+f1.mixin.UpdateNameFrame(f1Entry)
+check("F2: turning hideRealm off restores the realm on that same row",
+      f1Name:GetText():find("Peidae-Khadgar", 1, true) == 1
+        and occurrences(f1Name:GetText(), "Khadgar") == 1, show(f1Name:GetText()))
+check("F2: without doubling anything",
+      occurrences(f1Name:GetText(), "|cff808080(3)|r") == 1
+        and suffixCount(f1Name:GetText()) == 2, show(f1Name:GetText()))
+f1.ns.db.hideRealm = true
+
+-- F3. Turning a setting off has to un-write what it wrote. Both the
+-- both-settings-off gate and the nothing-to-do gate returned before touching
+-- a widget, so a row Blizzard is not rewriting kept the old rendering -- and
+-- for a hidden realm that means the player has no way to get the name back.
+local f3 = newAddon({}, { hideRealm = true })          -- member absent from the export
+local f3Fs = newFontString("Peidae-Khadgar")
+local f3Entry = newEntry(MEMBER, { f3Fs })
+f3.mixin.UpdateNameFrame(f3Entry)
+check("F3 baseline: a member with no data still loses the realm",
+      f3Fs:GetText() == "Peidae", show(f3Fs:GetText()))
+f3.ns.db.hideRealm = false
+f3.mixin.UpdateNameFrame(f3Entry)
+check("F3: and gets it back when the setting goes off",
+      f3Fs:GetText() == "Peidae-Khadgar", show(f3Fs:GetText()))
+
+local f3b = newAddon({ [KEY] = 620 }, { hideRealm = true })
+local f3bFs = newFontString("Peidae-Khadgar")
+local f3bEntry = newEntry(MEMBER, { f3bFs })
+f3b.mixin.UpdateNameFrame(f3bEntry)
+f3b.ns.db.hideRealm, f3b.ns.db.rosterColumn = false, false
+f3b.mixin.UpdateNameFrame(f3bEntry)
+check("F3: both settings off puts the row back exactly as Blizzard left it",
+      f3bFs:GetText() == "Peidae-Khadgar", show(f3bFs:GetText()))
+
+local f3c = newAddon({ [KEY] = 620 }, { hideRealm = true })
+local f3cFs = newFontString("Peidae-Khadgar")
+local f3cEntry = newEntry(MEMBER, { f3cFs })
+f3c.mixin.UpdateNameFrame(f3cEntry)
+f3c.ns.db.rosterColumn = false
+f3c.mixin.UpdateNameFrame(f3cEntry)
+check("F3: rosterColumn off alone drops the number and keeps the realm hidden",
+      f3cFs:GetText() == "Peidae", show(f3cFs:GetText()))
+
+-- ------------------------------------------------------------------
+-- Round-three review findings: defects in the round-two FIXES. Two of them
+-- were worse than the bugs they replaced, which is the whole reason this
+-- block exists.
+-- ------------------------------------------------------------------
+
+-- R1. `state` is keyed by entry FRAME and frames are pooled. The base
+-- reconstruction guarded on region identity but not on member identity, so
+-- scrolling spliced the previous occupant's base under the new one's text for
+-- any successor whose name merely started with the predecessor's.
+-- The successor's row shows the BARE name (the realm is in a sibling region,
+-- which is a shape section 11 already fixtures). That matters: if the realm
+-- were on the row, the "realm already shown" guard would save it and this
+-- check would pass with no member-identity guard at all.
+local ALT = { name = "Peidaeholic-Khadgar" }
+local r1 = newAddon({ [KEY] = 620, ["Peidaeholic-khadgar"] = 700 }, { hideRealm = true })
+local r1Fs = newFontString("Peidae-Khadgar")
+local r1Entry = newEntry(MEMBER, { r1Fs }, { nameFs = r1Fs })
+r1.mixin.UpdateNameFrame(r1Entry)
+r1Entry.memberInfo = ALT                      -- the frame is handed to another member
+r1Entry.nameFs = nil
+r1Fs:SetText("Peidaeholic")
+r1.mixin.UpdateNameFrame(r1Entry)
+check("R1: a pooled frame does not splice the last member's name into this one",
+      r1Fs:GetText() == "Peidaeholic |cffff8000(700)|r", show(r1Fs:GetText()))
+
+-- R1b. The same missing guard without pooling: Blizzard spells the realm one
+-- way on one pass and the other way on the next. Both spellings are real --
+-- matchKey exists because of them.
+local SPACED2 = { name = "Helltz-Moon Guard" }
+local r1b = newAddon({ ["Helltz-moon-guard"] = 700 }, { hideRealm = true })
+local r1bFs = newFontString("Helltz-MoonGuard")
+local r1bEntry = newEntry(SPACED2, { r1bFs }, { nameFs = r1bFs })
+r1b.mixin.UpdateNameFrame(r1bEntry)
+r1bFs:SetText("Helltz-Moon Guard")            -- respelled by Blizzard
+r1b.mixin.UpdateNameFrame(r1bEntry)
+check("R1b: a respelled realm is hidden, not concatenated",
+      r1bFs:GetText() == "Helltz |cffff8000(700)|r", show(r1bFs:GetText()))
+r1b.ns.db.hideRealm = false
+r1bFs:SetText("Helltz-Moon Guard")
+r1b.mixin.UpdateNameFrame(r1bEntry)
+check("R1b: and un-hiding it does not produce two realms",
+      occurrences(r1bFs:GetText(), "Moon Guard") == 1
+        and r1bFs:GetText():find("MoonGuard", 1, true) == nil, show(r1bFs:GetText()))
+
+-- R2. Provenance used to outrank everything and short-circuit the search, so
+-- a region we once latched onto wrongly re-latched onto itself forever and
+-- the real name column could never win it back. Here the name column holds
+-- the bare name (the realm is in a sibling region) and the note holds the
+-- full one, so the note legitimately wins pass 1 -- and must LOSE pass 2.
+local r2 = newAddon({ [KEY] = 620 }, { hideRealm = true })
+local r2Name = newFontString("Peidae")
+local r2Note = newFontString("Peidae-Khadgar")
+local r2Entry = newEntry(MEMBER, { r2Note, r2Name })
+r2.mixin.UpdateNameFrame(r2Entry)
+r2.ns.Data:ApplyLiveUpdate(KEY, 705)
+r2.mixin.UpdateNameFrame(r2Entry)
+r2.mixin.UpdateNameFrame(r2Entry)
+check("R2: the annotation migrates to the real name column, not back to itself",
+      occurrences(r2Name:GetText(), "|cffff8000(705)|r") == 1, show(r2Name:GetText()))
+check("R2: and the column it left is not still carrying one",
+      suffixCount(r2Note:GetText()) == 0, show(r2Note:GetText()))
+
+-- R2b. Provenance must also not hide a child frame: it used to satisfy the
+-- rank-1 short-circuit, so the recursion never ran. And a child's answer no
+-- longer wins outright regardless of rank -- a rank-6 prefix hit on a note one
+-- frame down used to beat an exact match on the parent.
+-- The parent holds the bare name (rank 2) and the child a note that merely
+-- starts with the full one (rank 6). A child's answer used to be returned
+-- whatever it scored, which handed the annotation to the note.
+local r2b = newAddon({ [KEY] = 620 }, { hideRealm = true })
+local r2bName = newFontString("Peidae")
+local r2bNote = newFontString("Peidae-Khadgar is our raid lead")
+local r2bEntry = newEntry(MEMBER, { r2bName }, { children = { newSubFrame({ r2bNote }) } })
+r2b.mixin.UpdateNameFrame(r2bEntry)
+check("R2b: a better-ranked parent beats a weaker hit in a child frame",
+      occurrences(r2bName:GetText(), "|cff1eff00(620)|r") == 1
+        and suffixCount(r2bNote:GetText()) == 0, show(r2bNote:GetText()))
+
+-- And provenance must not short-circuit the search: Blizzard rebuilds the row
+-- and puts the real name in a child frame that did not exist when we latched.
+local r2c = newAddon({ [KEY] = 620 }, { hideRealm = true })
+local r2cNote = newFontString("Peidae-Khadgar is our raid lead")
+local r2cEntry = newEntry(MEMBER, { r2cNote })
+r2c.mixin.UpdateNameFrame(r2cEntry)             -- only the note exists; rank 6 latches it
+local r2cName = newFontString("Peidae-Khadgar")
+r2cEntry.children = { newSubFrame({ r2cName }) }
+function r2cEntry:GetChildren() return unpack(self.children) end
+r2c.ns.Data:ApplyLiveUpdate(KEY, 621)          -- invalidates the memo, forcing a fresh walk
+r2c.mixin.UpdateNameFrame(r2cEntry)
+check("R2c: a region we latched onto does not outrank a name that appears later",
+      occurrences(r2cName:GetText(), "|cff1eff00(621)|r") == 1
+        and suffixCount(r2cNote:GetText()) == 0, show(r2cNote:GetText()))
+
+-- R3. revert() tested for equality where the rest of the file uses a prefix,
+-- so it could not undo itself on a row Blizzard had appended to -- which is
+-- exactly the row that has no other way to get its name back.
+local r3 = newAddon({}, { hideRealm = true })          -- no data: the early-return path
+local r3Fs = newFontString("Peidae-Khadgar")
+local r3Entry = newEntry(MEMBER, { r3Fs })
+r3.mixin.UpdateNameFrame(r3Entry)
+r3Fs:SetText(r3Fs:GetText() .. " |cff808080(3)|r")     -- Blizzard appends after us
+r3.ns.db.hideRealm = false
+r3.mixin.UpdateNameFrame(r3Entry)
+check("R3: the realm comes back even on a row Blizzard appended to",
+      r3Fs:GetText() == "Peidae-Khadgar |cff808080(3)|r", show(r3Fs:GetText()))
+
+-- R4. The walk-skipping fast path returns the memoized string without
+-- recomputing it, so anything else the rendering depends on has to be in the
+-- memo key. colorByIlvl was not, and toggling it looked like a broken setting
+-- until the member's item level happened to change.
+local r4 = newAddon({ [KEY] = 620 }, { hideRealm = true })
+local r4Fs = newFontString("Peidae-Khadgar")
+local r4Entry = newEntry(MEMBER, { r4Fs }, { nameFs = r4Fs })
+for _ = 1, 5 do r4.mixin.UpdateNameFrame(r4Entry) end
+r4.ns.db.colorByIlvl = false
+r4.mixin.UpdateNameFrame(r4Entry)
+check("R4: toggling colorByIlvl repaints a settled row on the next pass",
+      r4Fs:GetText() == "Peidae " .. r4.ns.COLOR.value .. "(620)" .. r4.ns.COLOR.reset,
+      show(r4Fs:GetText()))
+
+-- A secret name row: the realm strip must not be the thing that touches one.
+local hSecret = newFontString("Peidae-Khadgar")
+local hSecretRow = newEntry(MEMBER, { hSecret })
+h.mixin.UpdateNameFrame(hSecretRow)
+hSecret:SetText(newSecret("hideRealm name row"))
+h.mixin.UpdateNameFrame(hSecretRow)
+noSwallowedError("SECRET: a secret name row survives the realm strip untouched")
 
 print(("\n== %d passed, %d failed ==\n"):format(pass, fail))
 os.exit(fail == 0 and 0 or 1)
