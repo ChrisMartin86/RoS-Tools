@@ -11,6 +11,11 @@
 -- the author name, and the link is built from that author name AFTER the
 -- filter runs, so rewriting it there rewrites the whisper target too.
 --
+-- Both surfaces are covered: the chat windows (ChatFrame1..N, including
+-- whisper tabs opened mid-session) and the Guild & Communities window's own
+-- chat pane, which is not a ChatFrame global and is found by walking that
+-- frame for anything carrying an AddMessage.
+--
 -- Nothing is persisted and nothing is re-rendered: lines already printed
 -- keep whatever they were printed with. Turning the setting off puts the
 -- realm back on the NEXT message, not on the scrollback.
@@ -50,6 +55,24 @@ end
 local function collapse(text)
   text = stripColors(text):gsub(RIGHT_SQUOTE, "")
   return (text:gsub("[%s%p]", ""):lower())
+end
+
+--- True when `s` is `unit` repeated one or more times and nothing else.
+---
+--- One repeat is the ordinary case. More than one is the Guild & Communities
+--- chat pane on a cross-realm name, where the realm arrives stuttered --
+--- "Epia-Antonidas-Antonidas-Antonidas-..." -- often enough to wrap three
+--- lines. Nothing in this addon can produce that (every path here only ever
+--- removes characters), so it is not ours to fix at the source; what we can
+--- do is recognise the shape as "this character's realm, several times" and
+--- take all of it off. A tail that is the realm plus anything else still
+--- fails, and the label is left alone.
+local function isRepeatOf(s, unit)
+  if #unit == 0 or #s == 0 or #s % #unit ~= 0 then return false end
+  for i = 1, #s, #unit do
+    if s:sub(i, i + #unit - 1) ~= unit then return false end
+  end
+  return true
 end
 
 --- The colour escape starting at byte `i` of `s`, or nil. Both forms:
@@ -131,7 +154,10 @@ end
 local function stripLabelRealm(label, name, realm)
   local wantName, wantRealm = collapse(name), collapse(realm)
   if wantName == "" or wantRealm == "" then return nil end
-  if collapse(label) ~= wantName .. wantRealm then return nil end
+
+  local body = collapse(label)
+  if body:sub(1, #wantName) ~= wantName then return nil end
+  if not isRepeatOf(body:sub(#wantName + 1), wantRealm) then return nil end
 
   local at = 0
   while true do
@@ -139,7 +165,7 @@ local function stripLabelRealm(label, name, realm)
     if not at then return nil end
 
     local tail = label:sub(at + 1)
-    if collapse(tail) == wantRealm then
+    if isRepeatOf(collapse(tail), wantRealm) then
       local head = label:sub(1, at - 1)
       if head == "" then return nil end
       return dropEmptyColors(head .. keepAroundRealm(tail))
@@ -188,22 +214,67 @@ ns.StripChatRealms = stripRealms
 -- for the rest of the session.
 local wrapped = setmetatable({}, { __mode = "k" })
 
+local function wrapMessageFrame(cf)
+  if not cf or wrapped[cf] or type(cf.AddMessage) ~= "function" then return end
+  wrapped[cf] = true
+  local orig = cf.AddMessage
+  -- pcall, and fall back to the original text: a bug in the strip must cost
+  -- the realm suffix, never the message. This sits in front of every line
+  -- the player reads, including other addons' output.
+  cf.AddMessage = function(self, text, ...)
+    local ok, out = pcall(ns.StripChatRealms, text)
+    if not ok then out = text end
+    return orig(self, out, ...)
+  end
+end
+
+-- How deep under the Communities frame to look for its message frame. Four
+-- levels covers where it has sat across recent patches with room to spare,
+-- and bounds the walk on a frame that has a lot of children.
+local MAX_SEARCH_DEPTH = 4
+
+--- Wrap every message frame under `frame`, by SHAPE -- anything carrying an
+--- AddMessage -- rather than by a widget path.
+---
+--- The same rule Modules/Roster.lua follows for the member list, and for the
+--- same reason: Blizzard rearranges the Communities UI across patches, and a
+--- hard-coded path turns that into a broken addon instead of a no-op. Wrapping
+--- by shape is safe because the wrapper passes anything without a player link
+--- straight through.
+local function wrapMessageFramesUnder(frame, depth)
+  depth = depth or 0
+  if not frame or depth > MAX_SEARCH_DEPTH then return end
+  if type(frame.AddMessage) == "function" then wrapMessageFrame(frame) end
+  if type(frame.GetChildren) ~= "function" then return end
+
+  local kids = { frame:GetChildren() }
+  for i = 1, #kids do
+    wrapMessageFramesUnder(kids[i], depth + 1)
+  end
+end
+
 local function hookChatFrames()
   for i = 1, MAX_CHAT_FRAMES do
-    local cf = _G["ChatFrame" .. i]
-    if cf and not wrapped[cf] and type(cf.AddMessage) == "function" then
-      wrapped[cf] = true
-      local orig = cf.AddMessage
-      -- pcall, and fall back to the original text: a bug in the strip must
-      -- cost the realm suffix, never the message. This sits in front of
-      -- every line the player reads, including other addons' output.
-      cf.AddMessage = function(self, text, ...)
-        local ok, out = pcall(ns.StripChatRealms, text)
-        if not ok then out = text end
-        return orig(self, out, ...)
-      end
-    end
+    wrapMessageFrame(_G["ChatFrame" .. i])
   end
+end
+
+--- The Guild & Communities window: its own chat pane, which is NOT one of the
+--- ChatFrame globals, so the scan above never reaches it.
+local function hookCommunityFrames()
+  local frame = _G.CommunitiesFrame
+  if not frame then return false end
+
+  wrapMessageFramesUnder(frame, 0)
+
+  -- The pane can be built after the addon loads, so re-walk when the window
+  -- opens. wrapMessageFrame is idempotent, so this costs a walk and nothing
+  -- else.
+  if not frame.rosToolsChatWalked and type(frame.HookScript) == "function" then
+    frame.rosToolsChatWalked = true
+    frame:HookScript("OnShow", function(self) wrapMessageFramesUnder(self, 0) end)
+  end
+  return true
 end
 
 function Chat:OnEnable()
@@ -212,4 +283,17 @@ function Chat:OnEnable()
   if type(_G.FCF_OpenTemporaryWindow) == "function" then
     hooksecurefunc("FCF_OpenTemporaryWindow", hookChatFrames)
   end
+
+  -- Blizzard_Communities is load-on-demand. Same waiter Modules/Roster.lua
+  -- uses, and no frame is created at all when it is already loaded.
+  if hookCommunityFrames() then return end
+
+  local waiter = CreateFrame("Frame")
+  waiter:RegisterEvent("ADDON_LOADED")
+  waiter:SetScript("OnEvent", function(self, _, addon)
+    if addon == "Blizzard_Communities" and hookCommunityFrames() then
+      self:UnregisterAllEvents()
+      self:SetScript("OnEvent", nil)
+    end
+  end)
 end

@@ -11,6 +11,10 @@
   off the end of it. Whispers, party, raid and channels are covered too.
   Only the text changes: clicking a name still whispers the right character
   on the right realm, and hovering it still shows their item level.
+- **The Guild & Communities chat pane is covered too** — including the case
+  where a cross-realm name arrives there with its realm stuttered a dozen
+  times over (`Epia-Antonidas-Antonidas-Antonidas-…`), eating three lines of
+  the window. However many copies turn up, all of them come off.
 - On by default, including on upgrade — `/ros set hideRealm off` puts the
   realm back. Chat lines already on screen keep what they were printed with,
   so the switch shows up on the next message rather than rewriting what has

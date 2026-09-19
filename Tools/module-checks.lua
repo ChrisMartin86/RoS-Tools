@@ -185,6 +185,28 @@ local function newChatFrame(sink)
   return setmetatable(cf, { __index = function() return NOOP end })
 end
 
+--- The Guild & Communities window: a chat pane nested two levels down, so
+--- the walk in Modules/Chat.lua has to actually recurse to find it, and a
+--- second pane that can be added after the fact to exercise the OnShow
+--- re-walk. `rosToolsChatWalked` is rawset false for the same reason
+--- newChatFrame rawsets its flag: the NOOP fallback would read as "already
+--- done" and the hook would never attach.
+local function newCommunitiesFrame(sink)
+  local panes = { newChatFrame(sink) }
+  local mid = {}
+  function mid:GetChildren() return unpack(panes) end
+
+  local root = { scripts = {}, rosToolsChatWalked = false }
+  function root:GetChildren() return unpack({ mid }) end
+  function root:HookScript(k, fn) self.scripts[k] = fn end
+  setmetatable(root, { __index = function() return NOOP end })
+
+  return root, panes[1], function()
+    panes[#panes + 1] = newChatFrame(sink)
+    return panes[#panes]
+  end
+end
+
 -- ---------- addon environment ----------
 -- Modules/Tooltip.lua is loaded for ns.AddIlvlLines, which Roster's hover
 -- tooltip calls -- stubbing it would have left the roster tooltip asserting
@@ -305,6 +327,17 @@ local function newAddon(ilvls, opts)
     chatFrames[i] = newChatFrame(heard)
     env["ChatFrame" .. i] = chatFrames[i]
   end
+  -- Present by default: Blizzard_Communities is usually already loaded by the
+  -- time a player opens anything, and the scenario that matters for the
+  -- waiter is its absence -- opts.communities = false.
+  local communityFrame, communityPane, addCommunityPane
+  local function loadCommunities()
+    communityFrame, communityPane, addCommunityPane = newCommunitiesFrame(heard)
+    env.CommunitiesFrame = communityFrame
+    return communityPane
+  end
+  if opts.communities ~= false then loadCommunities() end
+
   env.FCF_OpenTemporaryWindow = function()
     local cf = newChatFrame(heard)
     chatFrames[#chatFrames + 1] = cf
@@ -352,6 +385,19 @@ local function newAddon(ilvls, opts)
     end,
     heard = heard,
     chatFrame = function(i) return chatFrames[i or 1] end,
+    communityPane = function() return communityPane end,
+    communityFrame = function() return communityFrame end,
+    addCommunityPane = function() return addCommunityPane and addCommunityPane() end,
+    --- Load Blizzard_Communities mid-session and fire ADDON_LOADED at every
+    --- waiter frame, the way the client does.
+    loadCommunities = function()
+      local pane = loadCommunities()
+      for i = 1, #created do
+        local fn = created[i].scripts and created[i].scripts.OnEvent
+        if fn then fn(created[i], "ADDON_LOADED", "Blizzard_Communities") end
+      end
+      return pane
+    end,
     openTempWindow = function() return env.FCF_OpenTemporaryWindow() end,
     setScrollOffset = function(n) scrollOffset = n end,
     --- Every row frame the Browser built, in list order.
@@ -1396,6 +1442,73 @@ local okBug, bugLine = pcall(function() return c.say(GUILD_LINE) end)
 c.ns.StripChatRealms = realStrip
 check("a strip that throws prints the message anyway, realm and all",
       okBug and bugLine == GUILD_LINE, show(bugLine))
+
+-- ------------------------------------------------------------------
+-- The Guild & Communities chat pane, and the stuttered realm in it
+-- ------------------------------------------------------------------
+-- That pane is not a ChatFrame global, so the ChatFrame1..50 scan never
+-- reaches it -- and it is where a cross-realm name arrives with its realm
+-- repeated a dozen times, three lines of "Epia-Antonidas-Antonidas-...".
+-- Nothing in this addon can produce that; what it can do is take all of it
+-- off.
+
+check("the pane is found and wrapped without creating a waiter frame",
+      c.waiters() == 0, c.waiters() .. " frames created")
+
+local pane = c.communityPane()
+pane:AddMessage(GUILD_LINE)
+check("a line printed to the Communities chat pane is stripped",
+      c.heard[#c.heard] == playerLink("Gheek-Stormrage", "Gheek") .. ": inv",
+      show(c.heard[#c.heard]))
+
+-- The realm repeated, with a clean payload: the label is the only thing
+-- carrying the stutter.
+local STUTTER = rawLink("Epia-Antonidas", "[Epia-Antonidas-Antonidas-Antonidas-Antonidas]")
+check("a realm repeated in the label comes off entirely",
+      c.say(STUTTER) == rawLink("Epia-Antonidas", "[Epia]"), show(c.say(STUTTER)))
+
+-- And with the stutter in the payload too, which is the shape that still
+-- has to leave the payload alone.
+local STUTTER2 = rawLink("Epia-Antonidas-Antonidas-Antonidas",
+                         "[Epia-Antonidas-Antonidas-Antonidas]")
+check("a realm repeated in the payload as well is still only cut in the label",
+      c.say(STUTTER2) == rawLink("Epia-Antonidas-Antonidas-Antonidas", "[Epia]"),
+      show(c.say(STUTTER2)))
+
+-- "The realm, again" is the shape. "The realm, and then something else" is
+-- not, and must not be: that is a name this code does not understand.
+local OTHERREALM = rawLink("Epia-Antonidas", "[Epia-Antonidas-Khadgar]")
+check("a DIFFERENT realm after the first is not treated as a repeat",
+      c.say(OTHERREALM) == OTHERREALM, show(c.say(OTHERREALM)))
+
+local PARTIAL = rawLink("Epia-Antonidas", "[Epia-Antonidas-Anton]")
+check("and neither is half of one", c.say(PARTIAL) == PARTIAL, show(c.say(PARTIAL)))
+
+-- A pane built after the window first opened -- the OnShow re-walk is the
+-- only thing that reaches it.
+local latePane = c.addCommunityPane()
+local onShow = c.communityFrame().scripts.OnShow
+-- Asserted before it is called: without this the missing hook takes the
+-- harness down with a "attempt to call a nil value" and every check below
+-- it goes unrun, which reads as a crash rather than as this feature being
+-- gone.
+check("the window's OnShow re-walk is installed", type(onShow) == "function")
+if type(onShow) == "function" then onShow(c.communityFrame()) end
+latePane:AddMessage(GUILD_LINE)
+check("a pane added later is picked up when the window is shown",
+      c.heard[#c.heard] == playerLink("Gheek-Stormrage", "Gheek") .. ": inv",
+      show(c.heard[#c.heard]))
+
+-- Blizzard_Communities is load-on-demand: on a client that has not opened
+-- the window yet, the frame does not exist at PLAYER_LOGIN at all.
+local lod = newAddon({}, { hideRealm = true, communities = false })
+check("with Blizzard_Communities unloaded, a waiter is created",
+      lod.waiters() == 1, lod.waiters() .. " frames created")
+local lodPane = lod.loadCommunities()
+lodPane:AddMessage(GUILD_LINE)
+check("and the pane is wrapped when that addon loads",
+      lod.heard[#lod.heard] == playerLink("Gheek-Stormrage", "Gheek") .. ": inv",
+      show(lod.heard[#lod.heard]))
 
 -- A secret value reports type() == "string", so the type check is not the
 -- guard -- find() on one raises. The strict fixture raises on ANY access.
