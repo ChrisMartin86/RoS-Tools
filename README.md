@@ -26,6 +26,7 @@ RoS-Tools/
 │   └── GuildData.lua           Generated export (do not hand-edit)
 ├── Modules/
 │   ├── Tooltip.lua             Unit tooltip injection
+│   ├── Chat.lua                Realm suffix strip on chat player names
 │   ├── Roster.lua              Guild & Communities roster annotation
 │   ├── Browser.lua             Standalone roster window
 │   └── Commands.lua            /ros slash commands
@@ -131,7 +132,7 @@ lookup.
 | `showDelta` | off | Show +/- against your own equipped ilvl |
 | `rosterColumn` | on | Annotate the Guild & Communities roster |
 | `rosterTooltip` | on | Add the ilvl line to the roster row hover tooltip |
-| `hideRealm` | on | Drop the `-Realm` suffix from names in the Guild & Communities roster |
+| `hideRealm` | on | Drop the `-Realm` suffix from names in the Guild & Communities roster and from player names in chat |
 | `chatTooltip` | on | Show a tooltip when hovering a player name in chat |
 | `suppressInCombat` | off | Hide the line while in combat |
 | `commEnabled` | on | Live ilvl updates from online guildmates via addon comm (`GUILD` channel) |

@@ -173,13 +173,25 @@ local function newWidget(kind)
   return w
 end
 
+--- A chat window. AddMessage is the function Modules/Chat.lua replaces, and
+--- what it records is what a player would actually read; HookScript is here
+--- because Tooltip.lua's chat-link hooks run over the same frames.
+--- `rosToolsChatHooked` is rawset to false rather than left to the NOOP
+--- fallback, which would report every fresh frame as already hooked.
+local function newChatFrame(sink)
+  local cf = { scripts = {}, rosToolsChatHooked = false }
+  function cf:AddMessage(text) sink[#sink + 1] = text end
+  function cf:HookScript(k, fn) self.scripts[k] = fn end
+  return setmetatable(cf, { __index = function() return NOOP end })
+end
+
 -- ---------- addon environment ----------
 -- Modules/Tooltip.lua is loaded for ns.AddIlvlLines, which Roster's hover
 -- tooltip calls -- stubbing it would have left the roster tooltip asserting
 -- against a fake.
 local FILES = { "Core/Init.lua", "Core/Util.lua", "Core/Config.lua",
-                "Core/Data.lua", "Modules/Tooltip.lua", "Modules/Browser.lua",
-                "Modules/Commands.lua", "Modules/Roster.lua" }
+                "Core/Data.lua", "Modules/Tooltip.lua", "Modules/Chat.lua",
+                "Modules/Browser.lua", "Modules/Commands.lua", "Modules/Roster.lua" }
 
 --- Stand up one addon instance. Returns the namespace plus the pieces a
 --- scenario drives: the mixin (whose UpdateNameFrame is the hooked entry
@@ -272,12 +284,32 @@ local function newAddon(ilvls, opts)
   -- runs after with the same arguments, and the original's return value is
   -- what the caller sees.
   env.hooksecurefunc = function(tbl, name, post)
+    -- WoW takes either (table, method, post) or (globalName, post). Only the
+    -- table form was modelled, so the global form -- which Tooltip.lua and
+    -- Chat.lua both use for FCF_OpenTemporaryWindow -- indexed a string and
+    -- blew up the moment the harness grew a FCF_OpenTemporaryWindow to hook.
+    if type(tbl) == "string" then tbl, name, post = env, tbl, name end
     local orig = tbl[name]
     tbl[name] = function(...)
       local results = { orig(...) }
       post(...)
       return unpack(results)
     end
+  end
+
+  -- Three docked windows plus a temporary one opened later, which is what
+  -- makes the FCF_OpenTemporaryWindow rescan in Chat:OnEnable observable.
+  local heard = {}
+  local chatFrames = {}
+  for i = 1, 3 do
+    chatFrames[i] = newChatFrame(heard)
+    env["ChatFrame" .. i] = chatFrames[i]
+  end
+  env.FCF_OpenTemporaryWindow = function()
+    local cf = newChatFrame(heard)
+    chatFrames[#chatFrames + 1] = cf
+    env["ChatFrame" .. #chatFrames] = cf
+    return cf
   end
 
   local guildData = {
@@ -312,6 +344,15 @@ local function newAddon(ilvls, opts)
   return {
     ns = ns, env = env, mixin = mixin, said = said,
     created = created,
+    --- Print a line to a chat window and get back what it rendered.
+    say = function(text, which)
+      local cf = chatFrames[which or 1]
+      cf:AddMessage(text)
+      return heard[#heard]
+    end,
+    heard = heard,
+    chatFrame = function(i) return chatFrames[i or 1] end,
+    openTempWindow = function() return env.FCF_OpenTemporaryWindow() end,
     setScrollOffset = function(n) scrollOffset = n end,
     --- Every row frame the Browser built, in list order.
     rows = function()
@@ -1211,6 +1252,158 @@ h.mixin.UpdateNameFrame(hSecretRow)
 hSecret:SetText(newSecret("hideRealm name row"))
 h.mixin.UpdateNameFrame(hSecretRow)
 noSwallowedError("SECRET: a secret name row survives the realm strip untouched")
+
+-- ==================================================================
+section("12. hideRealm in chat: the realm comes off the NAME, not the LINK")
+-- The realm suffix makes guild chat unreadable at any sane window width, but
+-- the obvious implementation -- a ChatFrame_AddMessageEventFilter that
+-- rewrites the author -- rewrites the whisper target with it, because the
+-- player link is built from the author name after the filter runs. Every
+-- check here is about the payload surviving intact while the label changes.
+-- ==================================================================
+local function playerLink(target, label, chatType)
+  return ("|Hplayer:%s:12345:%s|h[%s]|h"):format(target, chatType or "GUILD", label or target)
+end
+
+--- The same link with the label taken VERBATIM, brackets and all: the
+--- bracket is part of what the strip has to get right, so the shapes that
+--- test it cannot have the harness adding one of its own.
+local function rawLink(target, label)
+  return ("|Hplayer:%s:12345:GUILD|h%s|h"):format(target, label)
+end
+
+local c = newAddon({}, { hideRealm = true })
+
+local GUILD_LINE = playerLink("Gheek-Stormrage") .. ": inv"
+check("the realm comes off the displayed name",
+      c.say(GUILD_LINE) == playerLink("Gheek-Stormrage", "Gheek") .. ": inv",
+      show(c.say(GUILD_LINE)))
+check("and the link payload still carries the realm, so a click still whispers",
+      c.say(GUILD_LINE):find("|Hplayer:Gheek-Stormrage:12345:GUILD|h", 1, true) == 1,
+      show(c.say(GUILD_LINE)))
+
+-- The setting is read per message, not captured at hook time.
+c.ns.db.hideRealm = false
+check("hideRealm off leaves the line exactly as it arrived",
+      c.say(GUILD_LINE) == GUILD_LINE, show(c.say(GUILD_LINE)))
+c.ns.db.hideRealm = true
+
+-- Class colour, which retail wraps around the whole link.
+local COLORED = "|cff8787ed" .. playerLink("Gheek-Stormrage") .. "|r says hi"
+check("a class-coloured link keeps its colour and loses its realm",
+      c.say(COLORED) == "|cff8787ed" .. playerLink("Gheek-Stormrage", "Gheek") .. "|r says hi",
+      show(c.say(COLORED)))
+
+-- The shape retail actually prints: the class colour wraps the brackets, so
+-- neither end of the label is the name. Cutting from the last alphanumeric
+-- backwards lands inside the "|r" and takes the closing bracket with it --
+-- "[Gheek" was on screen for exactly that reason.
+local BRACKETED = rawLink("Gheek-Stormrage", "|cff8787ed[Gheek-Stormrage]|r")
+check("a colour wrapped AROUND the brackets keeps both of them",
+      c.say(BRACKETED) == rawLink("Gheek-Stormrage", "|cff8787ed[Gheek]|r"),
+      show(c.say(BRACKETED)))
+
+local INSIDE = rawLink("Gheek-Stormrage", "[|cff8787edGheek-Stormrage|r]")
+check("and a colour wrapped INSIDE them does too",
+      c.say(INSIDE) == rawLink("Gheek-Stormrage", "[|cff8787edGheek|r]"),
+      show(c.say(INSIDE)))
+
+-- Colour INSIDE the label: the escapes are structure, not name.
+local INNER = playerLink("Gheek-Stormrage", "|cff8787edGheek-Stormrage|r")
+check("a colour escape inside the label survives the cut",
+      c.say(INNER) == playerLink("Gheek-Stormrage", "|cff8787edGheek|r"), show(c.say(INNER)))
+
+-- A separately dimmed realm is the shape the roster hit too. The escape the
+-- realm opened is orphaned by the cut and must not be left dangling on the
+-- name -- what the player reads is "Gheek", in one piece.
+-- Exact equality on purpose: plain() strips escapes, so a check written
+-- against it passes whether or not the escape the realm opened was cleaned
+-- up, and "Gheek|cff808080|r" would have sailed through.
+local DIMMED = playerLink("Gheek-Stormrage", "Gheek|cff808080-Stormrage|r")
+check("a separately coloured realm is removed with its own escape",
+      c.say(DIMMED) == playerLink("Gheek-Stormrage", "Gheek"), show(c.say(DIMMED)))
+
+-- The same, with the colour opening AFTER the hyphen. Left behind, the
+-- escape has nothing to colour and nothing closes it, so it would tint the
+-- rest of the line.
+local OPENAFTER = playerLink("Gheek-Stormrage", "Gheek-|cff808080Stormrage|r")
+check("a colour that opened on the realm does not bleed into the line",
+      c.say(OPENAFTER) == playerLink("Gheek-Stormrage", "Gheek"), show(c.say(OPENAFTER)))
+
+-- Character names cannot contain a hyphen; realms can. Splitting the payload
+-- at the LAST hyphen would leave "Gheek-Azjol".
+local AZJOL = playerLink("Gheek-Azjol-Nerub")
+check("a hyphenated realm comes off whole",
+      c.say(AZJOL) == playerLink("Gheek-Azjol-Nerub", "Gheek"), show(c.say(AZJOL)))
+
+-- The label need not be spelled the way the payload is.
+local SPACED = playerLink("Gheek-MoonGuard", "Gheek-Moon Guard")
+check("a label whose realm is spelled differently still matches",
+      c.say(SPACED) == playerLink("Gheek-MoonGuard", "Gheek"), show(c.say(SPACED)))
+
+-- Two links in one line, and body text that contains hyphens of its own.
+local TWO = playerLink("Gheek-Stormrage") .. ": ping " ..
+            playerLink("Peidae-Khadgar") .. " re: the re-clear"
+check("every link in a line is stripped, and the body text is not touched",
+      c.say(TWO) == playerLink("Gheek-Stormrage", "Gheek") .. ": ping " ..
+        playerLink("Peidae-Khadgar", "Peidae") .. " re: the re-clear",
+      show(c.say(TWO)))
+
+-- A Battle.net link identifies an ACCOUNT. There is no realm in it, and the
+-- text after "BNplayer:" is not a character name to be cut at a hyphen.
+-- A real player link rides along in the same line on purpose: without one
+-- the "|Hplayer:" fast path returns before the pattern is ever applied, and
+-- this check would pass however greedily that pattern were written.
+local BN = "|HBNplayer:Gheek-Stormrage:12345:WHISPER|h[Gheek-Stormrage]|h pokes " ..
+           playerLink("Peidae-Khadgar")
+check("a BNplayer link is left alone while a player link beside it is stripped",
+      c.say(BN) == "|HBNplayer:Gheek-Stormrage:12345:WHISPER|h[Gheek-Stormrage]|h pokes " ..
+        playerLink("Peidae-Khadgar", "Peidae"), show(c.say(BN)))
+
+-- A label we do not recognise belongs to someone else. Cutting it at a
+-- hyphen would delete whatever followed.
+local TITLED = playerLink("Gheek-Stormrage", "Raid Leader Gheek-Stormrage")
+check("an unrecognised label is left exactly as it is",
+      c.say(TITLED) == TITLED, show(c.say(TITLED)))
+
+-- Same-realm names carry no realm in the payload at all.
+local SAME = playerLink("Tester", "Tester") .. ": ready"
+check("a same-realm name with no realm in the payload is untouched",
+      c.say(SAME) == SAME, show(c.say(SAME)))
+
+-- Everything else printed to a chat window goes through this wrapper too.
+local PLAIN = "Auction of |cffa335ee|Hitem:12345::::::::70:::::|h[Thunderfury - Blessed Blade]|h|r won"
+check("a line with no player link is passed through byte for byte",
+      c.say(PLAIN) == PLAIN, show(c.say(PLAIN)))
+
+-- A whisper tab opened mid-session is a chat frame the OnEnable scan never
+-- saw; the FCF_OpenTemporaryWindow rescan is what covers it.
+local before = c.chatFrame(1).AddMessage
+c.openTempWindow()
+c.chatFrame(4):AddMessage(GUILD_LINE)
+check("a temporary window opened later is wrapped too",
+      c.heard[#c.heard] == playerLink("Gheek-Stormrage", "Gheek") .. ": inv",
+      show(c.heard[#c.heard]))
+check("and the rescan does not wrap an already-wrapped frame a second time",
+      c.chatFrame(1).AddMessage == before)
+
+-- The wrapper sits in front of every line the player reads, including other
+-- addons' output, so a bug in the strip has to cost the realm suffix and
+-- nothing else.
+local realStrip = c.ns.StripChatRealms
+c.ns.StripChatRealms = function() error("boom") end
+local okBug, bugLine = pcall(function() return c.say(GUILD_LINE) end)
+c.ns.StripChatRealms = realStrip
+check("a strip that throws prints the message anyway, realm and all",
+      okBug and bugLine == GUILD_LINE, show(bugLine))
+
+-- A secret value reports type() == "string", so the type check is not the
+-- guard -- find() on one raises. The strict fixture raises on ANY access.
+local secretLine = newSecret("chat line")
+local okSecret = pcall(function() c.chatFrame(1):AddMessage(secretLine) end)
+check("SECRET: a secret chat line is passed through untouched", okSecret)
+check("and a secret that is a real string keeps its realm rather than being read",
+      c.say(markSecret(GUILD_LINE)) == GUILD_LINE, show(c.say(markSecret(GUILD_LINE))))
 
 print(("\n== %d passed, %d failed ==\n"):format(pass, fail))
 os.exit(fail == 0 and 0 or 1)

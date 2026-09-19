@@ -1,24 +1,30 @@
 # Changelog
 
-## Unreleased
+## 2.4.0
 
-### Fixed
+### Added
+
+- **Names no longer carry the realm, in chat or in the roster.** Guild chat
+  reads `Gheek` instead of `Gheek-Stormrage`, and the Guild & Communities
+  roster shows `Peidae` where it used to show `Peidae-Khadgar`, so the name
+  column stays readable at its usual width and the item level is not pushed
+  off the end of it. Whispers, party, raid and channels are covered too.
+  Only the text changes: clicking a name still whispers the right character
+  on the right realm, and hovering it still shows their item level.
+- On by default, including on upgrade — `/ros set hideRealm off` puts the
+  realm back. Chat lines already on screen keep what they were printed with,
+  so the switch shows up on the next message rather than rewriting what has
+  already scrolled past.
+
+### For maintainers
 
 - **The sidecar installer could not find a release to install** unless
   `ROSTOOLS_SIDECAR_VERSION` pinned one. Windows PowerShell 5.1 hands a JSON
   array back from `Invoke-RestMethod` as a single un-enumerated object, so the
   whole page of releases arrived as one item, no tag was ever read off it, and
-  the run ended in "No stable sidecar-v* release found" on a repo full of them.
-  Pinning a version worked throughout because that path asks for one release
-  rather than a list. Maintainer-facing only; the addon is unaffected.
-
-### Added
-
-- **Guild roster names no longer carry the realm.** The Guild & Communities
-  roster shows `Peidae` where it used to show `Peidae-Khadgar`, so the name
-  column is readable at its usual width and the item level is not pushed off
-  the end of it. The hover tooltip matches. On by default, including on
-  upgrade; `/ros set hideRealm off` puts the realm back.
+  the run ended in "No stable sidecar-v* release found" on a repo full of
+  them. Pinning a version worked throughout because that path asks for one
+  release rather than a list. The addon is unaffected.
 
 ## 2.3.1
 
