@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.4.1
+
+- **Updated for patch 12.1.5.** CurseForge and the in-game AddOns list no
+  longer flag RoS-Tools as out of date. No other changes.
+
 ## 2.4.0
 
 ### Added
