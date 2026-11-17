@@ -9,8 +9,8 @@ ns.GuildData = {
     -- age the data without knowing what zone this machine was in.
     -- generated_at is the same instant rendered as UTC, kept for humans
     -- reading the file and as the fallback for schema 2 readers.
-    generated_epoch = 1794820390,
-    generated_at = "2026-11-16 09:13:10",
+    generated_epoch = 1794906603,
+    generated_at = "2026-11-17 09:10:03",
     region = "us",
     realm = "khadgar",
     guild = "riddle-of-steel",
@@ -93,7 +93,7 @@ ns.GuildData = {
     ["Gushers-arthas"] = 321,
     ["Hamur-doomhammer"] = 328,
     ["Hamurz-doomhammer"] = 279,
-    ["Hannie-uldum"] = 311,
+    ["Hannie-uldum"] = 314,
     ["Hellswarden-uldum"] = 259,
     ["Helltz-moon-guard"] = 294,
     ["Helltz-tichondrius"] = 322,
@@ -128,7 +128,7 @@ ns.GuildData = {
     ["Leaila-khadgar"] = 330,
     ["Leroyjenkëns-proudmoore"] = 324,
     ["Lightßane-stormrage"] = 291,
-    ["Lionescanor-skullcrusher"] = 335,
+    ["Lionescanor-skullcrusher"] = 334,
     ["Logi-baelgun"] = 327,
     ["Lohk-medivh"] = 249,
     ["Lohkadin-khadgar"] = 118,
@@ -172,7 +172,7 @@ ns.GuildData = {
     ["Platious-antonidas"] = 332,
     ["Punyboy-doomhammer"] = 290,
     ["Punygirl-doomhammer"] = 102,
-    ["Punyman-doomhammer"] = 159,
+    ["Punyman-doomhammer"] = 164,
     ["Rainbane-arthas"] = 321,
     ["Raistlain-akama"] = 283,
     ["Raxyl-antonidas"] = 275,
