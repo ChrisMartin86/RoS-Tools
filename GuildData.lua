@@ -9,8 +9,8 @@ ns.GuildData = {
     -- age the data without knowing what zone this machine was in.
     -- generated_at is the same instant rendered as UTC, kept for humans
     -- reading the file and as the fallback for schema 2 readers.
-    generated_epoch = 1795684205,
-    generated_at = "2026-11-26 09:10:05",
+    generated_epoch = 1795770574,
+    generated_at = "2026-11-27 09:09:34",
     region = "us",
     realm = "khadgar",
     guild = "riddle-of-steel",
@@ -47,7 +47,7 @@ ns.GuildData = {
     ["Danorman-perenolde"] = 295,
     ["Darkestdeath-doomhammer"] = 288,
     ["Darnilan-malygos"] = 304,
-    ["Demzy-feathermoon"] = 333,
+    ["Demzy-feathermoon"] = 334,
     ["Denzy-feathermoon"] = 312,
     ["Dethfoxwrthy-khadgar"] = 146,
     ["Di-mannoroth"] = 323,
@@ -56,8 +56,8 @@ ns.GuildData = {
     ["Dilores-mannoroth"] = 290,
     ["Diya-khadgar"] = 251,
     ["Dolores-mannoroth"] = 290,
-    ["Drago-skullcrusher"] = 324,
-    ["Drekzy-feathermoon"] = 329,
+    ["Drago-skullcrusher"] = 325,
+    ["Drekzy-feathermoon"] = 330,
     ["Drewpballs-medivh"] = 279,
     ["Drosmac-doomhammer"] = 278,
     ["Drøgøth-kiljaeden"] = 330,
