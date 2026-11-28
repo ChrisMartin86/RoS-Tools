@@ -9,8 +9,8 @@ ns.GuildData = {
     -- age the data without knowing what zone this machine was in.
     -- generated_at is the same instant rendered as UTC, kept for humans
     -- reading the file and as the fallback for schema 2 readers.
-    generated_epoch = 1795770574,
-    generated_at = "2026-11-27 09:09:34",
+    generated_epoch = 1795856929,
+    generated_at = "2026-11-28 09:08:49",
     region = "us",
     realm = "khadgar",
     guild = "riddle-of-steel",
@@ -66,7 +66,7 @@ ns.GuildData = {
     ["Elmö-mannoroth"] = 291,
     ["Elronnd-doomhammer"] = 332,
     ["Eluveitie-lightbringer"] = 319,
-    ["Epia-antonidas"] = 332,
+    ["Epia-antonidas"] = 335,
     ["Erni-mannoroth"] = 326,
     ["Faeowynne-area-52"] = 282,
     ["Fayzon-khadgar"] = 287,
@@ -231,7 +231,7 @@ ns.GuildData = {
     ["Vindaku-tichondrius"] = 307,
     ["Warlockliz-area-52"] = 125,
     ["Wereßeàr-stormrage"] = 304,
-    ["Windowlycker-medivh"] = 331,
+    ["Windowlycker-medivh"] = 332,
     ["Wrinlee-doomhammer"] = 73,
     ["Xeevala-antonidas"] = 272,
     ["Yerkk-bleeding-hollow"] = 287,
